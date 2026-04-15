@@ -4,7 +4,8 @@ import AVKit
 struct MeetingDetailView: View {
     @Bindable var meeting: Meeting
     @ObservedObject var meetingManager: MeetingManager
-    
+    @ObservedObject var appSettings: AppSettingsStore
+
     @State private var selectedTab = 0
     @State private var isEditingTitle = false
     @State private var editedTitle = ""
@@ -34,11 +35,21 @@ struct MeetingDetailView: View {
                     }
                     .tag(1)
 
+                ChatTabView(
+                    meeting: meeting,
+                    meetingManager: meetingManager,
+                    appSettings: appSettings
+                )
+                    .tabItem {
+                        Label("Chat", systemImage: "bubble.left.and.text.bubble.right")
+                    }
+                    .tag(2)
+
                 AnalyticsTabView(meeting: meeting)
                     .tabItem {
                         Label("Analytics", systemImage: "chart.bar")
                     }
-                    .tag(2)
+                    .tag(3)
             }
             .tabViewStyle(.automatic)
 

@@ -61,14 +61,17 @@ struct MeetRecapApp: App {
         
         // Dashboard window
         Window("MeetRecap Dashboard", id: "dashboard") {
-            DashboardView(meetingManager: meetingManager)
+            DashboardView(
+                meetingManager: meetingManager,
+                appSettings: appSettingsStore
+            )
                 .modelContainer(modelContainer)
                 .onAppear {
                     configureManager()
                 }
         }
         .windowStyle(.titleBar)
-        .defaultSize(width: 800, height: 600)
+        .defaultSize(width: 900, height: 600)
         
         // Settings window
         Window("MeetRecap Settings", id: "settings") {

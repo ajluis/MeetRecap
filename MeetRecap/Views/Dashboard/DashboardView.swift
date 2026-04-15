@@ -6,6 +6,7 @@ struct DashboardView: View {
     @Query(sort: \Meeting.date, order: .reverse) private var meetings: [Meeting]
     @Environment(\.modelContext) private var modelContext
     @ObservedObject var meetingManager: MeetingManager
+    @ObservedObject var appSettings: AppSettingsStore
 
     @State private var selectedMeeting: Meeting?
     @State private var multiSelection: Set<UUID> = []
@@ -88,7 +89,11 @@ struct DashboardView: View {
 
             Group {
                 if let meeting = selectedMeeting {
-                    MeetingDetailView(meeting: meeting, meetingManager: meetingManager)
+                    MeetingDetailView(
+                        meeting: meeting,
+                        meetingManager: meetingManager,
+                        appSettings: appSettings
+                    )
                 } else {
                     emptyStateView
                 }

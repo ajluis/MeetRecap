@@ -20,6 +20,7 @@ final class MeetingManager: ObservableObject {
     let streamingTranscription: StreamingTranscriptionService
     let speakerProfileService: SpeakerProfileService
     let semanticSearch: SemanticSearchService
+    let chatService: MeetingChatService
 
     /// True when the active recording is using the native system-audio path
     /// (vs microphone).  Decides which recorder `stopCurrentRecording` talks to.
@@ -73,6 +74,9 @@ final class MeetingManager: ObservableObject {
         self.streamingTranscription = StreamingTranscriptionService()
         self.speakerProfileService = SpeakerProfileService()
         self.semanticSearch = SemanticSearchService()
+        let search = self.semanticSearch
+        let summary = self.summaryService
+        self.chatService = MeetingChatService(semanticSearch: search, summaryService: summary)
     }
     
     func configure(modelContext: ModelContext, appSettings: AppSettingsStore) {
