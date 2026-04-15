@@ -250,6 +250,9 @@ final class MeetingManager: ObservableObject {
             } else {
                 pendingSpeakerEmbeddings = [:]
             }
+
+            // Text embeddings — best-effort, won't block the pipeline if key is missing.
+            await embedSegmentsIfPossible(meeting: meeting)
             
             processingStatus = "Transcription complete"
             
@@ -344,6 +347,33 @@ final class MeetingManager: ObservableObject {
         meeting.title = newTitle
         meeting.updatedAt = Date()
         try? modelContext?.save()
+    }
+
+    // MARK: - Embeddings
+
+    /// Embed each transcript segment so it can be used for semantic search and chat.
+    /// Silently skips if no OpenAI API key is configured — the feature is optional.
+    private func embedSegmentsIfPossible(meeting: Meeting) async {
+        guard let key = KeychainHelper.load(key: "meetrecap_openai_key"), !key.isEmpty else {
+            return
+        }
+
+        let sorted = meeting.segments.sorted { $0.orderIndex < $1.orderIndex }
+        let needsEmbedding = sorted.filter { $0.embeddingData == nil && !$0.text.isEmpty }
+        guard !needsEmbedding.isEmpty else { return }
+
+        do {
+            processingStatus = "Building semantic index…"
+            let texts = needsEmbedding.map { $0.text }
+            let vectors = try await EmbeddingService.shared.embed(texts, apiKey: key)
+            guard vectors.count == needsEmbedding.count else { return }
+            for (segment, vector) in zip(needsEmbedding, vectors) {
+                segment.embeddingData = EmbeddingCoding.encode(vector)
+            }
+            try? modelContext?.save()
+        } catch {
+            print("[MeetingManager] Segment embedding failed: \(error)")
+        }
     }
 
     // MARK: - Speaker Profiles

@@ -11,6 +11,7 @@ final class TranscriptSegment {
     var speakerProfileID: UUID?  // Links to a SpeakerProfile, if known
     var confidence: Float
     var orderIndex: Int  // Maintain ordering within a meeting
+    @Attribute(.externalStorage) var embeddingData: Data?  // Float32 vector (1536-dim)
 
     var meeting: Meeting?
 
