@@ -19,21 +19,89 @@ struct SettingsView: View {
                 .tabItem {
                     Label("General", systemImage: "gear")
                 }
-            
+
             apiKeysTab
                 .tabItem {
                     Label("API Keys", systemImage: "key")
                 }
-            
+
             transcriptionTab
                 .tabItem {
                     Label("Transcription", systemImage: "waveform")
                 }
+
+            shortcutsTab
+                .tabItem {
+                    Label("Shortcuts", systemImage: "command")
+                }
+
+            calendarTab
+                .tabItem {
+                    Label("Calendar", systemImage: "calendar")
+                }
         }
-        .frame(width: 480, height: 380)
+        .frame(width: 520, height: 420)
         .onAppear {
             loadAPIKeys()
         }
+    }
+
+    // MARK: - Shortcuts Tab
+
+    private var shortcutsTab: some View {
+        Form {
+            Section {
+                Toggle("Enable global shortcuts", isOn: $appSettings.enableGlobalShortcuts)
+                    .onChange(of: appSettings.enableGlobalShortcuts) { _, _ in appSettings.save() }
+            } footer: {
+                Text("Global shortcuts work anywhere on your Mac without requiring Accessibility permissions.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Defaults") {
+                ShortcutRow(label: "Toggle recording", keys: "⌘⇧R")
+                ShortcutRow(label: "Open dashboard", keys: "⌘⇧D")
+            }
+        }
+        .formStyle(.grouped)
+        .padding()
+    }
+
+    // MARK: - Calendar Tab
+
+    private var calendarTab: some View {
+        Form {
+            Section {
+                Toggle("Integrate with Calendar", isOn: $appSettings.enableCalendarIntegration)
+                    .onChange(of: appSettings.enableCalendarIntegration) { _, _ in appSettings.save() }
+
+                Stepper(value: $appSettings.preRecordNotificationMinutes, in: 1...30) {
+                    Text("Notify \(appSettings.preRecordNotificationMinutes) min before meetings")
+                }
+                .onChange(of: appSettings.preRecordNotificationMinutes) { _, _ in appSettings.save() }
+                .disabled(!appSettings.enableCalendarIntegration)
+            } header: {
+                Text("Calendar")
+            } footer: {
+                Text("Polls your calendar every minute for events with video-call links (Zoom, Teams, Meet).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                Toggle("Detect meeting apps (Zoom, Teams, …)", isOn: $appSettings.enableMeetingDetection)
+                    .onChange(of: appSettings.enableMeetingDetection) { _, _ in appSettings.save() }
+            } header: {
+                Text("App Detection")
+            } footer: {
+                Text("Shows a prompt to record when Zoom, Teams, or similar apps are launched.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .padding()
     }
     
     // MARK: - General Tab
@@ -232,6 +300,26 @@ struct SettingsView: View {
     }
 }
 
+// MARK: - Shortcut Row Helper
+
+struct ShortcutRow: View {
+    let label: String
+    let keys: String
+
+    var body: some View {
+        HStack {
+            Text(label)
+            Spacer()
+            Text(keys)
+                .font(.system(.body, design: .monospaced, weight: .medium))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(.quaternary)
+                .clipShape(RoundedRectangle(cornerRadius: 5))
+        }
+    }
+}
+
 // MARK: - App Settings Store (Observable wrapper)
 
 @MainActor
@@ -242,7 +330,12 @@ final class AppSettingsStore: ObservableObject {
     @Published var autoSummarize: Bool
     @Published var launchAtLogin: Bool
     @Published var enableSpeakerDiarization: Bool
-    
+    @Published var enableGlobalShortcuts: Bool
+    @Published var enableCalendarIntegration: Bool
+    @Published var enableMeetingDetection: Bool
+    @Published var preRecordNotificationMinutes: Int
+    @Published var speakerMatchThreshold: Double
+
     private var modelContext: ModelContext?
     
     var selectedParakeetVersion: ParakeetVersion {
@@ -262,6 +355,11 @@ final class AppSettingsStore: ObservableObject {
         self.autoSummarize = true
         self.launchAtLogin = false
         self.enableSpeakerDiarization = true
+        self.enableGlobalShortcuts = true
+        self.enableCalendarIntegration = false
+        self.enableMeetingDetection = false
+        self.preRecordNotificationMinutes = 2
+        self.speakerMatchThreshold = 0.85
     }
     
     func setModelContext(_ context: ModelContext) {
@@ -279,6 +377,11 @@ final class AppSettingsStore: ObservableObject {
             autoSummarize = settings.autoSummarize
             launchAtLogin = settings.launchAtLogin
             enableSpeakerDiarization = settings.enableSpeakerDiarization
+            enableGlobalShortcuts = settings.enableGlobalShortcuts
+            enableCalendarIntegration = settings.enableCalendarIntegration
+            enableMeetingDetection = settings.enableMeetingDetection
+            preRecordNotificationMinutes = settings.preRecordNotificationMinutes
+            speakerMatchThreshold = settings.speakerMatchThreshold
         }
     }
     
@@ -299,6 +402,11 @@ final class AppSettingsStore: ObservableObject {
         settings.autoSummarize = autoSummarize
         settings.launchAtLogin = launchAtLogin
         settings.enableSpeakerDiarization = enableSpeakerDiarization
+        settings.enableGlobalShortcuts = enableGlobalShortcuts
+        settings.enableCalendarIntegration = enableCalendarIntegration
+        settings.enableMeetingDetection = enableMeetingDetection
+        settings.preRecordNotificationMinutes = preRecordNotificationMinutes
+        settings.speakerMatchThreshold = speakerMatchThreshold
         settings.updatedAt = Date()
         
         try? context.save()

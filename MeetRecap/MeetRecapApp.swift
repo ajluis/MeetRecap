@@ -7,7 +7,10 @@ import AppKit
 struct MeetRecapApp: App {
     @StateObject private var meetingManager = MeetingManager()
     @StateObject private var appSettingsStore = AppSettingsStore()
-    
+    @StateObject private var hotkeyManager = HotkeyManager()
+    @StateObject private var calendarService = CalendarIntegrationService()
+    @StateObject private var meetingDetection = MeetingDetectionService()
+
     let modelContainer: ModelContainer
     
     init() {
@@ -97,6 +100,35 @@ struct MeetRecapApp: App {
         // One-time migration: move temp-dir recordings into persistent storage.
         AudioStorageManager.shared.migrateMeetingsFromTempDirectory(modelContext: context)
 
+        // Wire global hotkeys
+        hotkeyManager.onToggleRecording = { [weak meetingManager] in
+            meetingManager?.toggleRecording()
+        }
+        hotkeyManager.onOpenDashboard = {
+            NSApplication.shared.activate(ignoringOtherApps: true)
+            // Routing a SwiftUI openWindow from here is awkward; use URL scheme fallback.
+            if let url = URL(string: "meetrecap://dashboard") {
+                NSWorkspace.shared.open(url)
+            }
+        }
+        hotkeyManager.enabled = appSettingsStore.enableGlobalShortcuts
+
+        // Calendar + meeting detection
+        calendarService.notificationMinutes = appSettingsStore.preRecordNotificationMinutes
+        if appSettingsStore.enableCalendarIntegration {
+            Task {
+                _ = await calendarService.requestAccess()
+                calendarService.start()
+            }
+        }
+        if appSettingsStore.enableMeetingDetection {
+            meetingDetection.onDetected = { [weak meetingManager] _ in
+                // For now, just surface via menu bar — user still clicks to record.
+                _ = meetingManager
+            }
+            meetingDetection.start()
+        }
+
         // Load model in background - don't block UI
         Task.detached {
             await meetingManager.loadTranscriptionModel()
@@ -151,8 +183,10 @@ struct MenuBarPopoverView: View {
             
             if meetingManager.audioRecorder.isRecording {
                 audioLevelSection
+                LiveTranscriptView(service: meetingManager.streamingTranscription)
+                Divider().padding(.vertical, 4)
             }
-            
+
             settingsSection
             Divider().padding(.vertical, 8)
             controlSection
@@ -401,6 +435,7 @@ struct MenuBarPopoverView: View {
                 try meetingManager.audioRecorder.startRecording(
                     deviceID: meetingManager.audioDeviceManager.selectedDevice?.id
                 )
+                await meetingManager.startLiveTranscription()
                 if recordScreen {
                     try await meetingManager.screenRecorder.startRecording()
                 }

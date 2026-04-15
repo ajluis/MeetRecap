@@ -41,9 +41,14 @@ final class AppSettings {
     var autoSummarize: Bool
     var launchAtLogin: Bool
     var enableSpeakerDiarization: Bool
+    var enableGlobalShortcuts: Bool
+    var enableCalendarIntegration: Bool
+    var enableMeetingDetection: Bool
+    var preRecordNotificationMinutes: Int
+    var speakerMatchThreshold: Double
     var createdAt: Date
     var updatedAt: Date
-    
+
     init() {
         self.id = "app_settings"
         self.parakeetVersion = ParakeetVersion.v3.rawValue
@@ -52,6 +57,11 @@ final class AppSettings {
         self.autoSummarize = true
         self.launchAtLogin = false
         self.enableSpeakerDiarization = true
+        self.enableGlobalShortcuts = true
+        self.enableCalendarIntegration = false
+        self.enableMeetingDetection = false
+        self.preRecordNotificationMinutes = 2
+        self.speakerMatchThreshold = 0.85
         self.createdAt = Date()
         self.updatedAt = Date()
     }

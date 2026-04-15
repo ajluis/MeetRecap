@@ -15,6 +15,7 @@ final class MeetingManager: ObservableObject {
     let summaryService: SummaryService
     let audioDeviceManager: AudioDeviceManager
     let audioPlayback: AudioPlaybackService
+    let streamingTranscription: StreamingTranscriptionService
 
     // Expose transcription service state for UI
     var transcriptionState: TranscriptionState {
@@ -31,6 +32,7 @@ final class MeetingManager: ObservableObject {
         self.summaryService = SummaryService()
         self.audioDeviceManager = AudioDeviceManager()
         self.audioPlayback = AudioPlaybackService()
+        self.streamingTranscription = StreamingTranscriptionService()
     }
     
     func configure(modelContext: ModelContext, appSettings: AppSettingsStore) {
@@ -58,13 +60,31 @@ final class MeetingManager: ObservableObject {
     }
     
     // MARK: - Recording Lifecycle
-    
+
+    /// Start a live-streaming transcription session that runs alongside the
+    /// normal file-based recording. Call after the audio tap is installed.
+    func startLiveTranscription() async {
+        guard let models = transcriptionService.loadedModels else { return }
+
+        // Forward tap buffers into the sliding-window manager
+        let streaming = streamingTranscription
+        audioRecorder.onAudioBuffer = { buffer in
+            streaming.appendBuffer(buffer)
+        }
+
+        await streaming.start(models: models)
+    }
+
     /// Called when recording stops. Triggers post-processing pipeline.
     func finishRecording(
         audioURL: URL?,
         screenRecordingURL: URL?,
         duration: TimeInterval
     ) async {
+        // Tear down live streaming — full-file transcription replaces it below.
+        audioRecorder.onAudioBuffer = nil
+        streamingTranscription.stop()
+
         guard let audioURL = audioURL else { return }
         
         // Create meeting record
@@ -276,6 +296,7 @@ final class MeetingManager: ObservableObject {
                     try audioRecorder.startRecording(
                         deviceID: audioDeviceManager.selectedDevice?.id
                     )
+                    await startLiveTranscription()
                 } catch {
                     print("Failed to start recording: \(error)")
                 }

@@ -50,7 +50,11 @@ final class TranscriptionService: ObservableObject {
     private let audioConverter = MeetRecap.AudioConverter()
     
     private var parakeetVersion: ParakeetVersion = .v3
-    
+
+    /// Currently loaded ASR models, if any. Exposed so services such as
+    /// `StreamingTranscriptionService` can reuse the already-downloaded models.
+    var loadedModels: AsrModels? { asrModels }
+
     init() {}
     
     // MARK: - Model Management
