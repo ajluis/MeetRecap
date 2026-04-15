@@ -10,6 +10,7 @@ struct DashboardView: View {
     @State private var selectedMeeting: Meeting?
     @State private var multiSelection: Set<UUID> = []
     @State private var searchText = ""
+
     @State private var showDeleteConfirmation = false
     @State private var pendingDelete: [Meeting] = []
     @State private var showExportPicker = false
@@ -22,25 +23,19 @@ struct DashboardView: View {
 
     private var filteredMeetings: [Meeting] {
         meetings.filter { meeting in
-            // Date range
             if let range = dateRange.dateRange {
                 guard meeting.date >= range.start && meeting.date < range.end else { return false }
             }
-
-            // Tags (must contain ALL selected tags)
             if !selectedTagIDs.isEmpty {
                 let meetingTagIDs = Set(meeting.tags.map(\.id))
                 guard selectedTagIDs.isSubset(of: meetingTagIDs) else { return false }
             }
-
-            // Search
             if !searchText.isEmpty {
                 let matchesTitle = meeting.title.localizedCaseInsensitiveContains(searchText)
                 let matchesSummary = meeting.summary?.localizedCaseInsensitiveContains(searchText) ?? false
                 let matchesSegments = meeting.segments.contains { $0.text.localizedCaseInsensitiveContains(searchText) }
                 if !(matchesTitle || matchesSummary || matchesSegments) { return false }
             }
-
             return true
         }
         .sorted(by: sorter)
@@ -57,16 +52,58 @@ struct DashboardView: View {
     }
 
     var body: some View {
-        NavigationSplitView {
-            meetingListSidebar
-        } detail: {
-            if let meeting = selectedMeeting {
-                MeetingDetailView(meeting: meeting, meetingManager: meetingManager)
-            } else {
-                emptyStateView
+        HStack(spacing: 0) {
+            MeetingsSidebar(
+                meetings: filteredMeetings,
+                selectedMeeting: $selectedMeeting,
+                multiSelection: $multiSelection,
+                searchText: $searchText,
+                dateRange: $dateRange,
+                sortOrder: $sortOrder,
+                selectedTagIDs: $selectedTagIDs,
+                onDelete: { meeting in
+                    pendingDelete = [meeting]
+                    showDeleteConfirmation = true
+                },
+                onTag: { meeting in
+                    tagMenuMeeting = meeting
+                },
+                onExport: { meeting in
+                    meetingToExport = meeting
+                    showExportPicker = true
+                }
+            )
+            .frame(width: 260)
+            .overlay(alignment: .trailing) {
+                Rectangle()
+                    .fill(DashboardTheme.sidebarBorder)
+                    .frame(width: 1)
+            }
+
+            Group {
+                if let meeting = selectedMeeting {
+                    MeetingDetailView(meeting: meeting, meetingManager: meetingManager)
+                } else {
+                    emptyStateView
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(DashboardTheme.detailBackground)
+        }
+        .frame(minWidth: 860, minHeight: 540)
+        .toolbar {
+            if !multiSelection.isEmpty {
+                ToolbarItem {
+                    Button {
+                        let selected = meetings.filter { multiSelection.contains($0.id) }
+                        pendingDelete = selected
+                        showDeleteConfirmation = true
+                    } label: {
+                        Label("Delete \(multiSelection.count)", systemImage: "trash")
+                    }
+                }
             }
         }
-        .frame(minWidth: 800, minHeight: 500)
         .confirmationDialog("Delete meeting?", isPresented: $showDeleteConfirmation) {
             Button("Delete \(pendingDelete.count) meeting\(pendingDelete.count == 1 ? "" : "s")", role: .destructive) {
                 meetingManager.deleteMeetings(pendingDelete)
@@ -82,48 +119,6 @@ struct DashboardView: View {
         } message: {
             Text("This will permanently delete the selected meeting\(pendingDelete.count == 1 ? "" : "s") and their recordings.")
         }
-    }
-
-    // MARK: - Sidebar
-
-    private var meetingListSidebar: some View {
-        VStack(spacing: 0) {
-            MeetingStatsView(meetings: meetings)
-
-            MeetingFilterBar(
-                dateRange: $dateRange,
-                sortOrder: $sortOrder,
-                selectedTagIDs: $selectedTagIDs
-            )
-
-            meetingList
-        }
-        .searchable(text: $searchText, prompt: "Search meetings...")
-        .navigationTitle("Meetings")
-        .toolbar {
-            if !multiSelection.isEmpty {
-                ToolbarItemGroup {
-                    Button {
-                        let selected = meetings.filter { multiSelection.contains($0.id) }
-                        pendingDelete = selected
-                        showDeleteConfirmation = true
-                    } label: {
-                        Label("Delete", systemImage: "trash")
-                    }
-                    .help("Delete selected meetings")
-
-                    Text("\(multiSelection.count) selected")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            } else {
-                ToolbarItem {
-                    Text("\(filteredMeetings.count) of \(meetings.count)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
         .fileExporter(
             isPresented: $showExportPicker,
             document: meetingToExport.map { MeetingDocument(meeting: $0) } ?? MeetingDocument(meeting: nil),
@@ -132,99 +127,24 @@ struct DashboardView: View {
         ) { _ in
             meetingToExport = nil
         }
-    }
-
-    private var meetingList: some View {
-        List(selection: $selectedMeeting) {
-            if filteredMeetings.isEmpty {
-                Section {
-                    Text(meetings.isEmpty ? "No meetings yet" : "No matches")
-                        .foregroundStyle(.secondary)
-                }
-            } else {
-                ForEach(filteredMeetings) { meeting in
-                    meetingRow(for: meeting)
-                }
-            }
-        }
-        .listStyle(.sidebar)
-    }
-
-    @ViewBuilder
-    private func meetingRow(for meeting: Meeting) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Button {
-                toggleSelection(meeting)
-            } label: {
-                Image(systemName: multiSelection.contains(meeting.id) ? "checkmark.square.fill" : "square")
-                    .foregroundStyle(multiSelection.contains(meeting.id) ? Color.accentColor : .secondary)
-            }
-            .buttonStyle(.borderless)
-            .padding(.top, 4)
-
-            MeetingRowView(meeting: meeting)
-        }
-        .tag(meeting)
-        .contextMenu {
-            Button {
-                selectedMeeting = meeting
-            } label: {
-                Label("View Details", systemImage: "doc.text")
-            }
-
-            Button {
-                tagMenuMeeting = meeting
-            } label: {
-                Label("Manage Tags...", systemImage: "tag")
-            }
-
-            Button {
-                meetingToExport = meeting
-                showExportPicker = true
-            } label: {
-                Label("Export...", systemImage: "square.and.arrow.up")
-            }
-
-            Divider()
-
-            Button(role: .destructive) {
-                pendingDelete = [meeting]
-                showDeleteConfirmation = true
-            } label: {
-                Label("Delete", systemImage: "trash")
-            }
-        }
-        .popover(
-            isPresented: Binding(
-                get: { tagMenuMeeting?.id == meeting.id },
-                set: { if !$0 { tagMenuMeeting = nil } }
-            )
-        ) {
+        .sheet(item: $tagMenuMeeting) { meeting in
             TagManagementView(meeting: meeting, meetingManager: meetingManager)
-        }
-    }
-
-    private func toggleSelection(_ meeting: Meeting) {
-        if multiSelection.contains(meeting.id) {
-            multiSelection.remove(meeting.id)
-        } else {
-            multiSelection.insert(meeting.id)
         }
     }
 
     // MARK: - Empty State
 
     private var emptyStateView: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "mic.slash")
-                .font(.system(size: 48))
+        VStack(spacing: 14) {
+            Image(systemName: "waveform")
+                .font(.system(size: 42))
                 .foregroundStyle(.tertiary)
 
-            Text("No Meetings Yet")
-                .font(.title2)
+            Text("Select a meeting")
+                .font(.title3)
                 .fontWeight(.medium)
 
-            Text("Click the MeetRecap icon in the menu bar\nand start a recording to get started.")
+            Text("Pick a meeting from the sidebar or start a new\nrecording from the menu bar.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -233,7 +153,7 @@ struct DashboardView: View {
     }
 }
 
-// MARK: - Meeting Row View
+// MARK: - Meeting Row helper (kept around for exports/menus if needed)
 
 struct MeetingRowView: View {
     let meeting: Meeting
@@ -244,70 +164,35 @@ struct MeetingRowView: View {
                 Text(meeting.title)
                     .font(.headline)
                     .lineLimit(1)
-
                 Spacer()
-
-                if !meeting.isTranscribed {
-                    Image(systemName: "clock")
-                        .foregroundStyle(.orange)
-                        .help("Transcription pending")
-                } else if !meeting.isSummarized {
-                    Image(systemName: "doc.text")
-                        .foregroundStyle(.blue)
-                        .help("Summary pending")
-                } else {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                        .help("Complete")
-                }
+                statusIcon
             }
-
             HStack(spacing: 8) {
                 Text(meeting.date, style: .date)
                 Text("·")
                 Text(meeting.formattedDuration)
-
-                if meeting.segments.count > 0 {
-                    Text("·")
-                    Text("\(meeting.segments.count) segments")
-                }
             }
             .font(.caption)
             .foregroundStyle(.secondary)
-
-            if !meeting.tags.isEmpty {
-                HStack(spacing: 4) {
-                    ForEach(meeting.tags.prefix(4)) { tag in
-                        HStack(spacing: 3) {
-                            Circle()
-                                .fill(tag.color)
-                                .frame(width: 6, height: 6)
-                            Text(tag.name)
-                                .font(.caption2)
-                        }
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .background(tag.color.opacity(0.15))
-                        .clipShape(Capsule())
-                    }
-                    if meeting.tags.count > 4 {
-                        Text("+\(meeting.tags.count - 4)")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-
-            if let summary = meeting.summary {
-                Text(summary)
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(2)
-            }
         }
         .padding(.vertical, 2)
     }
+
+    private var statusIcon: some View {
+        Group {
+            if meeting.isSummarized {
+                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+            } else if meeting.isTranscribed {
+                Image(systemName: "doc.text").foregroundStyle(.blue)
+            } else {
+                Image(systemName: "clock").foregroundStyle(.orange)
+            }
+        }
+    }
 }
+
+// Make Meeting Identifiable by ID for sheet(item:) binding
+extension Meeting: Identifiable {}
 
 // MARK: - File Document for Export
 

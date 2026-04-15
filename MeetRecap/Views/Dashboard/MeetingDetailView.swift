@@ -86,13 +86,14 @@ struct MeetingDetailView: View {
     }
     
     // MARK: - Header
-    
+
     private var headerSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
                 if isEditingTitle {
                     TextField("Meeting title", text: $editedTitle)
                         .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 22, weight: .semibold))
                         .onSubmit {
                             meeting.title = editedTitle
                             meeting.updatedAt = Date()
@@ -103,70 +104,78 @@ struct MeetingDetailView: View {
                         }
                 } else {
                     Text(meeting.title)
-                        .font(.title2)
-                        .fontWeight(.semibold)
+                        .font(.system(size: 22, weight: .semibold))
                         .onTapGesture(count: 2) {
                             editedTitle = meeting.title
                             isEditingTitle = true
                         }
+                        .help("Double-click to rename")
                 }
-                
+
                 Spacer()
-                
+
                 statusBadge
             }
-            
-            HStack(spacing: 16) {
-                Label(meeting.date.formatted(date: .long, time: .shortened), systemImage: "calendar")
-                
-                Label(meeting.formattedDuration, systemImage: "clock")
-                
+
+            HStack(spacing: 14) {
+                metadataItem(icon: "calendar", text: meeting.date.formatted(date: .abbreviated, time: .shortened))
+                metadataItem(icon: "clock", text: meeting.formattedDuration)
                 if !meeting.participants.isEmpty {
-                    Label(meeting.participants.joined(separator: ", "), systemImage: "person.2")
+                    metadataItem(icon: "person.2", text: meeting.participants.joined(separator: ", "))
+                }
+                if !meeting.tags.isEmpty {
+                    HStack(spacing: 4) {
+                        ForEach(meeting.tags.prefix(4)) { tag in
+                            HStack(spacing: 3) {
+                                Circle().fill(tag.color).frame(width: 6, height: 6)
+                                Text(tag.name).font(.caption2)
+                            }
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(tag.color.opacity(0.12))
+                            .clipShape(Capsule())
+                        }
+                    }
                 }
             }
-            .font(.caption)
             .foregroundStyle(.secondary)
         }
-        .padding()
-        .background(.ultraThinMaterial)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 14)
+    }
+
+    private func metadataItem(icon: String, text: String) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon)
+                .font(.system(size: 10))
+            Text(text)
+                .font(.caption)
+        }
     }
     
     private var statusBadge: some View {
-        HStack(spacing: 4) {
-            if !meeting.isTranscribed {
-                if meetingManager.isProcessing {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text(meetingManager.processingStatus)
-                        .font(.caption)
-                } else {
-                    Image(systemName: "clock")
-                    Text("Pending transcription")
-                        .font(.caption)
-                }
-            } else if !meeting.isSummarized {
-                if meetingManager.isProcessing {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text(meetingManager.processingStatus)
-                        .font(.caption)
-                } else {
-                    Image(systemName: "text.alignleft")
-                    Text("Summary pending")
-                        .font(.caption)
-                }
-            } else {
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
-                Text("Complete")
+        HStack(spacing: 5) {
+            if meetingManager.isProcessing && (!meeting.isTranscribed || !meeting.isSummarized) {
+                ProgressView().controlSize(.small)
+                Text(meetingManager.processingStatus)
                     .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if meeting.isSummarized {
+                Circle().fill(DashboardTheme.completeColor).frame(width: 6, height: 6)
+                Text("Complete").font(.caption).foregroundStyle(.secondary)
+            } else if meeting.isTranscribed {
+                Circle().fill(DashboardTheme.processingColor).frame(width: 6, height: 6)
+                Text("Summary pending").font(.caption).foregroundStyle(.secondary)
+            } else {
+                Circle().fill(DashboardTheme.pendingColor).frame(width: 6, height: 6)
+                Text("Transcription pending").font(.caption).foregroundStyle(.secondary)
             }
         }
-        .padding(.horizontal, 8)
+        .padding(.horizontal, 10)
         .padding(.vertical, 4)
-        .background(.quaternary)
-        .clipShape(Capsule())
+        .background(
+            Capsule().fill(Color.secondary.opacity(0.12))
+        )
     }
     
     // MARK: - Export

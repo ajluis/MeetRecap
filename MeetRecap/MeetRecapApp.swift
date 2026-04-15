@@ -44,7 +44,11 @@ struct MeetRecapApp: App {
     var body: some Scene {
         // Menu bar icon — use a dedicated View so @Environment(\.openWindow) works
         MenuBarExtra {
-            MenuBarPopoverView(meetingManager: meetingManager)
+            MenuBarPopoverView(
+                meetingManager: meetingManager,
+                calendarService: calendarService,
+                appSettings: appSettingsStore
+            )
                 .modelContainer(modelContainer)
                 .onAppear {
                     configureManager()
@@ -171,16 +175,35 @@ struct MenuBarLabelView: View {
 
 struct MenuBarPopoverView: View {
     @ObservedObject var meetingManager: MeetingManager
+    @ObservedObject var calendarService: CalendarIntegrationService
+    @ObservedObject var appSettings: AppSettingsStore
     @Environment(\.openWindow) private var openWindow
     @State private var recordScreen = false
     @State private var tick = false
     @State private var forceRefresh = false
-    
+
+    private var imminentEvent: CalendarIntegrationService.UpcomingEvent? {
+        guard appSettings.enableCalendarIntegration else { return nil }
+        let window = TimeInterval(appSettings.preRecordNotificationMinutes * 60 + 30)
+        return calendarService.upcomingEvents.first(where: { event in
+            let until = event.startDate.timeIntervalSinceNow
+            return until >= 0 && until <= window
+        })
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             headerSection
-            Divider().padding(.vertical, 8)
-            
+
+            if let event = imminentEvent, !meetingManager.audioRecorder.isRecording {
+                UpcomingMeetingBanner(event: event) {
+                    meetingManager.toggleRecording()
+                }
+                Divider().padding(.vertical, 4)
+            } else {
+                Divider().padding(.vertical, 8)
+            }
+
             if meetingManager.audioRecorder.isRecording {
                 audioLevelSection
                 LiveTranscriptView(service: meetingManager.streamingTranscription)
