@@ -20,6 +20,9 @@ struct DashboardView: View {
     @State private var dateRange: MeetingDateRange = .all
     @State private var sortOrder: MeetingSortOrder = .dateDescending
     @State private var selectedTagIDs: Set<UUID> = []
+    @State private var showSemanticSearch = false
+    @State private var pendingSeekSegmentID: UUID?
+    @State private var pendingSeekTime: TimeInterval?
 
     private var filteredMeetings: [Meeting] {
         meetings.filter { meeting in
@@ -71,6 +74,9 @@ struct DashboardView: View {
                 onExport: { meeting in
                     meetingToExport = meeting
                     showExportPicker = true
+                },
+                onSemanticSearch: {
+                    showSemanticSearch = true
                 }
             )
             .frame(width: 260)
@@ -129,6 +135,19 @@ struct DashboardView: View {
         }
         .sheet(item: $tagMenuMeeting) { meeting in
             TagManagementView(meeting: meeting, meetingManager: meetingManager)
+        }
+        .sheet(isPresented: $showSemanticSearch) {
+            SemanticSearchView(meetingManager: meetingManager) { result in
+                if let match = meetings.first(where: { $0.id == result.meetingID }) {
+                    selectedMeeting = match
+                    pendingSeekSegmentID = result.segmentID
+                    pendingSeekTime = result.startTime
+                    // Seek playback to the matched segment if already loaded.
+                    if meetingManager.audioPlayback.currentURL != nil {
+                        meetingManager.audioPlayback.seekAndPlay(to: result.startTime)
+                    }
+                }
+            }
         }
     }
 

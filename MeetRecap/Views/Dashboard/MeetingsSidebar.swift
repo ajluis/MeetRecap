@@ -17,6 +17,7 @@ struct MeetingsSidebar: View {
     let onDelete: (Meeting) -> Void
     let onTag: (Meeting) -> Void
     let onExport: (Meeting) -> Void
+    let onSemanticSearch: () -> Void
 
     @Environment(\.openWindow) private var openWindow
 
@@ -58,6 +59,17 @@ struct MeetingsSidebar: View {
             Text("MeetRecap")
                 .font(.system(size: 14, weight: .semibold))
             Spacer()
+            Button {
+                onSemanticSearch()
+            } label: {
+                Image(systemName: "sparkle.magnifyingglass")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.white.opacity(0.7))
+            }
+            .buttonStyle(.plain)
+            .keyboardShortcut("f", modifiers: [.command, .shift])
+            .help("Search all meetings (⌘⇧F)")
+
             Button {
                 openWindow(id: "settings")
             } label: {
