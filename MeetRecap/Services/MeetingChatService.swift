@@ -47,10 +47,15 @@ final class MeetingChatService: ObservableObject {
     // MARK: - Send
 
     /// Send a user message for the given meeting and await the assistant reply.
+    ///
+    /// Retrieval strategy:
+    ///   1. Run a quick keyword search to pull the 8 most topically-relevant segments.
+    ///   2. Always include the full transcript too — GLM-4.6 / GLM-5.1 have 200K windows,
+    ///      so even long meetings fit comfortably. Retrieval just helps the model focus
+    ///      and gives us citations the UI can linkify.
     func send(
         question: String,
         meeting: Meeting,
-        openAIEmbeddingKey: String?,
         openRouterKey: String?,
         model: String,
         reasoningEffort: ReasoningEffort
@@ -68,33 +73,21 @@ final class MeetingChatService: ObservableObject {
             return
         }
 
-        // Retrieval (needs OpenAI embeddings key). Falls back to full transcript if not configured.
-        let citations: [SemanticSearchResult]
-        if let openAIKey = openAIEmbeddingKey, !openAIKey.isEmpty {
-            do {
-                citations = try await semanticSearch.topSegments(
-                    inMeeting: meeting.id,
-                    query: trimmed,
-                    topK: 8,
-                    apiKey: openAIKey
-                )
-            } catch {
-                errorMessage = "Retrieval failed: \(error.localizedDescription)"
-                return
-            }
-        } else {
-            citations = []
-        }
+        // Keyword retrieval for citation hints. No API call, no key required.
+        let citations = semanticSearch.topSegments(
+            inMeeting: meeting.id,
+            query: trimmed,
+            topK: 8
+        )
 
-        let contextBlock = citations.isEmpty
-            ? Self.fullTranscript(of: meeting)
-            : Self.contextBlock(from: citations)
+        // Build context: full transcript (primary) + a highlight block if keyword hits exist.
+        let context = Self.contextBlock(fullTranscriptOf: meeting, highlights: citations)
 
         let answer: String
         do {
             answer = try await askOpenRouter(
                 question: trimmed,
-                context: contextBlock,
+                context: context,
                 history: Array(messages.dropLast()),
                 apiKey: openRouterKey,
                 model: model,
@@ -191,19 +184,12 @@ final class MeetingChatService: ObservableObject {
 
     // MARK: - Context Building
 
-    private static func contextBlock(from results: [SemanticSearchResult]) -> String {
-        results.map { result in
-            let ts = formatTimestamp(result.startTime)
-            let speaker = result.speaker ?? "Unknown"
-            return "[\(ts)] \(speaker): \(result.text)"
-        }
-        .joined(separator: "\n\n")
-    }
-
-    private static func fullTranscript(of meeting: Meeting) -> String {
-        meeting.segments
+    private static func contextBlock(
+        fullTranscriptOf meeting: Meeting,
+        highlights: [SemanticSearchResult]
+    ) -> String {
+        let transcript = meeting.segments
             .sorted { $0.orderIndex < $1.orderIndex }
-            .prefix(200)
             .map { segment in
                 let ts = formatTimestamp(segment.startTime)
                 if let speaker = segment.speaker {
@@ -212,6 +198,27 @@ final class MeetingChatService: ObservableObject {
                 return "[\(ts)] \(segment.text)"
             }
             .joined(separator: "\n")
+
+        if highlights.isEmpty {
+            return "## Full Transcript\n\n\(transcript)"
+        }
+
+        let highlightsBlock = highlights.map { result in
+            let ts = formatTimestamp(result.startTime)
+            let speaker = result.speaker ?? "Unknown"
+            return "[\(ts)] \(speaker): \(result.text)"
+        }
+        .joined(separator: "\n")
+
+        return """
+        ## Most Relevant Segments (keyword-matched)
+
+        \(highlightsBlock)
+
+        ## Full Transcript
+
+        \(transcript)
+        """
     }
 
     private static func formatTimestamp(_ seconds: TimeInterval) -> String {

@@ -170,11 +170,9 @@ struct ChatTabView: View {
         input = ""
         Task {
             let openRouter = KeychainHelper.load(key: "meetrecap_openrouter_key")
-            let openAI = KeychainHelper.load(key: "meetrecap_openai_key")
             await chat.send(
                 question: question,
                 meeting: meeting,
-                openAIEmbeddingKey: openAI,
                 openRouterKey: openRouter,
                 model: appSettings.openRouterModel,
                 reasoningEffort: appSettings.selectedReasoningEffort

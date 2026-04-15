@@ -8,9 +8,7 @@ struct SettingsView: View {
     @ObservedObject var transcriptionService: TranscriptionService
     
     @State private var openRouterKey = ""
-    @State private var openAIKey = ""
     @State private var showOpenRouterKey = false
-    @State private var showOpenAIKey = false
     @State private var saveMessage: String?
     
     var body: some View {
@@ -136,7 +134,7 @@ struct SettingsView: View {
                 HStack {
                     Text("Model")
                     Spacer()
-                    TextField("z-ai/glm-4.6", text: $appSettings.openRouterModel)
+                    TextField("z-ai/glm-5.1", text: $appSettings.openRouterModel)
                         .textFieldStyle(.roundedBorder)
                         .frame(width: 240)
                         .onSubmit { appSettings.save() }
@@ -161,7 +159,7 @@ struct SettingsView: View {
         Form {
             Section {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("API keys are stored in your macOS Keychain.")
+                    Text("Stored in your macOS Keychain.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
@@ -171,30 +169,16 @@ struct SettingsView: View {
                         text: $openRouterKey,
                         isVisible: $showOpenRouterKey
                     )
-                    Text("Used for summaries and chat. GLM-4.6 by default.")
+                    Text("Powers all AI features — summaries, chat, and smart titles. Default model: z-ai/glm-5.1.")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
             } header: {
-                Text("OpenRouter (summaries + chat)")
+                Text("OpenRouter")
             }
 
             Section {
-                keyField(
-                    label: "OpenAI API Key",
-                    placeholder: "sk-...",
-                    text: $openAIKey,
-                    isVisible: $showOpenAIKey
-                )
-                Text("Used only for text embeddings (semantic search + chat retrieval). Optional but strongly recommended.")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            } header: {
-                Text("OpenAI (embeddings)")
-            }
-
-            Section {
-                Button("Save API Keys") {
+                Button("Save API Key") {
                     saveAPIKeys()
                 }
                 .buttonStyle(.borderedProminent)
@@ -300,17 +284,13 @@ struct SettingsView: View {
     
     private func loadAPIKeys() {
         openRouterKey = KeychainHelper.load(key: "meetrecap_openrouter_key") ?? ""
-        openAIKey = KeychainHelper.load(key: "meetrecap_openai_key") ?? ""
     }
 
     private func saveAPIKeys() {
         if !openRouterKey.isEmpty {
             KeychainHelper.save(key: "meetrecap_openrouter_key", value: openRouterKey)
         }
-        if !openAIKey.isEmpty {
-            KeychainHelper.save(key: "meetrecap_openai_key", value: openAIKey)
-        }
-        saveMessage = "API keys saved to Keychain"
+        saveMessage = "API key saved to Keychain"
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
             saveMessage = nil
@@ -379,7 +359,7 @@ final class AppSettingsStore: ObservableObject {
     
     init() {
         self.parakeetVersion = ParakeetVersion.v3.rawValue
-        self.openRouterModel = "z-ai/glm-4.6"
+        self.openRouterModel = "z-ai/glm-5.1"
         self.reasoningEffort = ReasoningEffort.low.rawValue
         self.autoTranscribe = true
         self.autoSummarize = true

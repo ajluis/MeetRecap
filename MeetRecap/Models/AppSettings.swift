@@ -43,7 +43,7 @@ enum ReasoningEffort: String, Codable, CaseIterable {
 final class AppSettings {
     @Attribute(.unique) var id: String
     var parakeetVersion: String  // ParakeetVersion rawValue
-    var openRouterModel: String  // e.g. "z-ai/glm-4.6"
+    var openRouterModel: String  // e.g. "z-ai/glm-5.1"
     var reasoningEffort: String  // ReasoningEffort rawValue
     var autoTranscribe: Bool
     var autoSummarize: Bool
@@ -61,7 +61,7 @@ final class AppSettings {
     init() {
         self.id = "app_settings"
         self.parakeetVersion = ParakeetVersion.v3.rawValue
-        self.openRouterModel = "z-ai/glm-4.6"
+        self.openRouterModel = "z-ai/glm-5.1"
         self.reasoningEffort = ReasoningEffort.low.rawValue
         self.autoTranscribe = true
         self.autoSummarize = true

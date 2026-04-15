@@ -178,17 +178,8 @@ struct SemanticSearchView: View {
     private func runSearch() {
         errorMessage = nil
         guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        guard let key = KeychainHelper.load(key: "meetrecap_openai_key"), !key.isEmpty else {
-            errorMessage = "Semantic search requires an OpenAI API key. Add one in Settings → API Keys."
-            return
-        }
-        Task {
-            do {
-                results = try await meetingManager.semanticSearch.search(query: query, topK: 20, apiKey: key)
-            } catch {
-                errorMessage = error.localizedDescription
-            }
-        }
+        // Local BM25 search — no API call required.
+        results = meetingManager.semanticSearch.search(query: query, topK: 20)
     }
 
     private func formatTime(_ seconds: TimeInterval) -> String {
