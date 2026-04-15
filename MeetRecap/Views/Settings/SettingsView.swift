@@ -340,6 +340,7 @@ final class AppSettingsStore: ObservableObject {
     @Published var enableMeetingDetection: Bool
     @Published var preRecordNotificationMinutes: Int
     @Published var speakerMatchThreshold: Double
+    @Published var useNativeSystemAudio: Bool
 
     private var modelContext: ModelContext?
     
@@ -365,6 +366,7 @@ final class AppSettingsStore: ObservableObject {
         self.enableMeetingDetection = false
         self.preRecordNotificationMinutes = 2
         self.speakerMatchThreshold = 0.85
+        self.useNativeSystemAudio = false
     }
     
     func setModelContext(_ context: ModelContext) {
@@ -387,6 +389,7 @@ final class AppSettingsStore: ObservableObject {
             enableMeetingDetection = settings.enableMeetingDetection
             preRecordNotificationMinutes = settings.preRecordNotificationMinutes
             speakerMatchThreshold = settings.speakerMatchThreshold
+            useNativeSystemAudio = settings.useNativeSystemAudio
         }
     }
     
@@ -412,6 +415,7 @@ final class AppSettingsStore: ObservableObject {
         settings.enableMeetingDetection = enableMeetingDetection
         settings.preRecordNotificationMinutes = preRecordNotificationMinutes
         settings.speakerMatchThreshold = speakerMatchThreshold
+        settings.useNativeSystemAudio = useNativeSystemAudio
         settings.updatedAt = Date()
         
         try? context.save()

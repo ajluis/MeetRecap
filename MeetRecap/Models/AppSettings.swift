@@ -46,6 +46,7 @@ final class AppSettings {
     var enableMeetingDetection: Bool
     var preRecordNotificationMinutes: Int
     var speakerMatchThreshold: Double
+    var useNativeSystemAudio: Bool
     var createdAt: Date
     var updatedAt: Date
 
@@ -62,6 +63,7 @@ final class AppSettings {
         self.enableMeetingDetection = false
         self.preRecordNotificationMinutes = 2
         self.speakerMatchThreshold = 0.85
+        self.useNativeSystemAudio = false
         self.createdAt = Date()
         self.updatedAt = Date()
     }

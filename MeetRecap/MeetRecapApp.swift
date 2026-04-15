@@ -147,12 +147,12 @@ struct MenuBarLabelView: View {
     @State private var tick = false
     
     var body: some View {
-        if meetingManager.audioRecorder.isRecording {
+        if meetingManager.isAnyRecording {
             HStack(spacing: 4) {
                 Image(systemName: "mic.fill")
                     .symbolEffect(.pulse)
                     .foregroundStyle(.red)
-                Text(formatDuration(meetingManager.audioRecorder.currentDuration))
+                Text(formatDuration(meetingManager.currentRecordingDuration))
                     .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(.red)
             }
@@ -196,13 +196,13 @@ struct MenuBarPopoverView: View {
         VStack(spacing: 0) {
             headerSection
 
-            if let event = imminentEvent, !meetingManager.audioRecorder.isRecording {
+            if let event = imminentEvent, !meetingManager.isAnyRecording {
                 UpcomingMeetingBanner(event: event) {
                     meetingManager.toggleRecording()
                 }
                 Divider().padding(.vertical, 4)
             } else if let detectedApp = meetingDetection.pendingPrompt,
-                      !meetingManager.audioRecorder.isRecording {
+                      !meetingManager.isAnyRecording {
                 AppDetectedBanner(
                     app: detectedApp,
                     onRecord: {
@@ -221,7 +221,7 @@ struct MenuBarPopoverView: View {
                 Divider().padding(.vertical, 8)
             }
 
-            if meetingManager.audioRecorder.isRecording {
+            if meetingManager.isAnyRecording {
                 audioLevelSection
                 LiveTranscriptView(service: meetingManager.streamingTranscription)
                 Divider().padding(.vertical, 4)
@@ -252,7 +252,7 @@ struct MenuBarPopoverView: View {
             
             Spacer()
             
-            if meetingManager.audioRecorder.isRecording {
+            if meetingManager.isAnyRecording {
                 Text("Recording")
                     .font(.caption)
                     .foregroundStyle(.red)
@@ -321,7 +321,7 @@ struct MenuBarPopoverView: View {
                 .pickerStyle(.menu)
                 .labelsHidden()
                 .frame(maxWidth: 150)
-                .disabled(meetingManager.audioRecorder.isRecording)
+                .disabled(meetingManager.isAnyRecording)
             }
             .padding(.horizontal, 16)
             
@@ -337,7 +337,34 @@ struct MenuBarPopoverView: View {
             }
             .toggleStyle(.checkbox)
             .padding(.horizontal, 16)
-            .disabled(meetingManager.audioRecorder.isRecording)
+            .disabled(meetingManager.isAnyRecording)
+
+            // System audio (native, no BlackHole) toggle
+            if SystemAudioRecorder.isAvailable {
+                Toggle(isOn: Binding(
+                    get: { appSettings.useNativeSystemAudio },
+                    set: {
+                        appSettings.useNativeSystemAudio = $0
+                        appSettings.save()
+                    }
+                )) {
+                    HStack {
+                        Image(systemName: "speaker.wave.2")
+                            .frame(width: 20)
+                            .foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Record system audio")
+                                .font(.subheadline)
+                            Text("Captures all device output, no BlackHole needed")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .toggleStyle(.checkbox)
+                .padding(.horizontal, 16)
+                .disabled(meetingManager.isAnyRecording)
+            }
         }
     }
     
@@ -345,7 +372,7 @@ struct MenuBarPopoverView: View {
     
     private var controlSection: some View {
         VStack(spacing: 4) {
-            if meetingManager.audioRecorder.isRecording {
+            if meetingManager.isAnyRecording {
                 // Stop button
                 Button {
                     stopRecording()
@@ -362,7 +389,7 @@ struct MenuBarPopoverView: View {
                 .padding(.horizontal, 16)
                 
                 // Duration
-                Text(formatDuration(meetingManager.audioRecorder.currentDuration))
+                Text(formatDuration(meetingManager.currentRecordingDuration))
                     .font(.system(.title2, design: .monospaced, weight: .medium))
                     .foregroundStyle(.red)
                     .padding(.vertical, 4)
@@ -466,16 +493,11 @@ struct MenuBarPopoverView: View {
 
     private func startRecording() {
         Task {
-            // Ensure transcription model is loaded before starting
             if !meetingManager.isTranscriptionReady {
                 await meetingManager.loadTranscriptionModel()
             }
-
             do {
-                try meetingManager.audioRecorder.startRecording(
-                    deviceID: meetingManager.audioDeviceManager.selectedDevice?.id
-                )
-                await meetingManager.startLiveTranscription()
+                try await meetingManager.startRecording()
                 if recordScreen {
                     try await meetingManager.screenRecorder.startRecording()
                 }
@@ -484,11 +506,11 @@ struct MenuBarPopoverView: View {
             }
         }
     }
-    
+
     private func stopRecording() {
-        let audioURL = meetingManager.audioRecorder.stopRecording()
-        let calendarContext = meetingManager.consumeActiveCalendarContext()
         Task {
+            let (audioURL, duration) = await meetingManager.stopRecording()
+            let calendarContext = meetingManager.consumeActiveCalendarContext()
             var screenURL: URL? = nil
             if recordScreen {
                 screenURL = await meetingManager.screenRecorder.stopRecording()
@@ -496,7 +518,7 @@ struct MenuBarPopoverView: View {
             await meetingManager.finishRecording(
                 audioURL: audioURL,
                 screenRecordingURL: screenURL,
-                duration: meetingManager.audioRecorder.currentDuration,
+                duration: duration,
                 calendarContext: calendarContext
             )
         }

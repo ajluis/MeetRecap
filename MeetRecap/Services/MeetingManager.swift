@@ -2,6 +2,7 @@ import Foundation
 import SwiftData
 import Combine
 import UserNotifications
+import AVFoundation
 
 @MainActor
 final class MeetingManager: ObservableObject {
@@ -10,6 +11,7 @@ final class MeetingManager: ObservableObject {
     @Published var processingStatus = ""
 
     let audioRecorder: AudioRecorder
+    let systemAudioRecorder: SystemAudioRecorder
     let screenRecorder: ScreenRecorder
     let transcriptionService: TranscriptionService
     let summaryService: SummaryService
@@ -17,6 +19,20 @@ final class MeetingManager: ObservableObject {
     let audioPlayback: AudioPlaybackService
     let streamingTranscription: StreamingTranscriptionService
     let speakerProfileService: SpeakerProfileService
+
+    /// True when the active recording is using the native system-audio path
+    /// (vs microphone).  Decides which recorder `stopCurrentRecording` talks to.
+    private var usingSystemAudio: Bool = false
+
+    /// Is a recording currently in progress, regardless of source?
+    var isAnyRecording: Bool {
+        audioRecorder.isRecording || systemAudioRecorder.isRecording
+    }
+
+    /// Current duration, regardless of source.
+    var currentRecordingDuration: TimeInterval {
+        audioRecorder.isRecording ? audioRecorder.currentDuration : systemAudioRecorder.currentDuration
+    }
 
     /// Speaker embeddings from the most recent transcription, keyed by raw speaker ID
     /// (e.g. "Speaker 1"). Used when the user opts to remember a voice.
@@ -47,6 +63,7 @@ final class MeetingManager: ObservableObject {
     
     init() {
         self.audioRecorder = AudioRecorder()
+        self.systemAudioRecorder = SystemAudioRecorder()
         self.screenRecorder = ScreenRecorder()
         self.transcriptionService = TranscriptionService()
         self.summaryService = SummaryService()
@@ -84,6 +101,38 @@ final class MeetingManager: ObservableObject {
     
     // MARK: - Recording Lifecycle
 
+    // MARK: - Unified Recording Start/Stop
+
+    /// Start recording using the source currently configured in settings.
+    /// System-audio path is used when `useNativeSystemAudio` is true AND available;
+    /// otherwise falls back to the microphone path.
+    func startRecording() async throws {
+        let wantsSystemAudio = appSettings?.useNativeSystemAudio ?? false
+        if wantsSystemAudio && SystemAudioRecorder.isAvailable {
+            usingSystemAudio = true
+            try await systemAudioRecorder.startRecording()
+        } else {
+            usingSystemAudio = false
+            try audioRecorder.startRecording(deviceID: audioDeviceManager.selectedDevice?.id)
+        }
+        await startLiveTranscription()
+    }
+
+    /// Stop whichever recorder is running and return the resulting audio URL + duration.
+    func stopRecording() async -> (URL?, TimeInterval) {
+        if usingSystemAudio && systemAudioRecorder.isRecording {
+            let duration = systemAudioRecorder.currentDuration
+            let url = await systemAudioRecorder.stopRecording()
+            usingSystemAudio = false
+            return (url, duration)
+        } else if audioRecorder.isRecording {
+            let duration = audioRecorder.currentDuration
+            let url = audioRecorder.stopRecording()
+            return (url, duration)
+        }
+        return (nil, 0)
+    }
+
     /// Start a live-streaming transcription session that runs alongside the
     /// normal file-based recording. Call after the audio tap is installed.
     func startLiveTranscription() async {
@@ -93,10 +142,15 @@ final class MeetingManager: ObservableObject {
 
         guard let models = transcriptionService.loadedModels else { return }
 
-        // Forward tap buffers into the sliding-window manager
+        // Forward tap buffers into the sliding-window manager from whichever recorder is active.
         let streaming = streamingTranscription
-        audioRecorder.onAudioBuffer = { buffer in
+        let forward: (AVAudioPCMBuffer) -> Void = { buffer in
             streaming.appendBuffer(buffer)
+        }
+        if usingSystemAudio {
+            systemAudioRecorder.onAudioBuffer = forward
+        } else {
+            audioRecorder.onAudioBuffer = forward
         }
 
         await streaming.start(models: models)
@@ -349,28 +403,22 @@ final class MeetingManager: ObservableObject {
 
     /// Start/stop recording with a single call. Used by global hotkeys.
     func toggleRecording() {
-        if audioRecorder.isRecording {
-            let audioURL = audioRecorder.stopRecording()
-            let context = activeCalendarContext
-            activeCalendarContext = nil
-            Task {
+        Task {
+            if isAnyRecording {
+                let (audioURL, duration) = await stopRecording()
+                let context = consumeActiveCalendarContext()
                 await finishRecording(
                     audioURL: audioURL,
                     screenRecordingURL: nil,
-                    duration: audioRecorder.currentDuration,
+                    duration: duration,
                     calendarContext: context
                 )
-            }
-        } else {
-            Task {
+            } else {
                 if !isTranscriptionReady {
                     await loadTranscriptionModel()
                 }
                 do {
-                    try audioRecorder.startRecording(
-                        deviceID: audioDeviceManager.selectedDevice?.id
-                    )
-                    await startLiveTranscription()
+                    try await startRecording()
                 } catch {
                     print("Failed to start recording: \(error)")
                 }
