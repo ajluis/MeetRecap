@@ -33,6 +33,12 @@ struct MeetingDetailView: View {
                         Label("Transcript", systemImage: "text.quote")
                     }
                     .tag(1)
+
+                AnalyticsTabView(meeting: meeting)
+                    .tabItem {
+                        Label("Analytics", systemImage: "chart.bar")
+                    }
+                    .tag(2)
             }
             .tabViewStyle(.automatic)
 

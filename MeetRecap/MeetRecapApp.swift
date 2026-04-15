@@ -47,6 +47,7 @@ struct MeetRecapApp: App {
             MenuBarPopoverView(
                 meetingManager: meetingManager,
                 calendarService: calendarService,
+                meetingDetection: meetingDetection,
                 appSettings: appSettingsStore
             )
                 .modelContainer(modelContainer)
@@ -104,6 +105,9 @@ struct MeetRecapApp: App {
         // One-time migration: move temp-dir recordings into persistent storage.
         AudioStorageManager.shared.migrateMeetingsFromTempDirectory(modelContext: context)
 
+        // Give the meeting manager access to calendar for auto-titling recordings.
+        meetingManager.calendarServiceRef = calendarService
+
         // Wire global hotkeys
         hotkeyManager.onToggleRecording = { [weak meetingManager] in
             meetingManager?.toggleRecording()
@@ -126,10 +130,6 @@ struct MeetRecapApp: App {
             }
         }
         if appSettingsStore.enableMeetingDetection {
-            meetingDetection.onDetected = { [weak meetingManager] _ in
-                // For now, just surface via menu bar — user still clicks to record.
-                _ = meetingManager
-            }
             meetingDetection.start()
         }
 
@@ -176,6 +176,7 @@ struct MenuBarLabelView: View {
 struct MenuBarPopoverView: View {
     @ObservedObject var meetingManager: MeetingManager
     @ObservedObject var calendarService: CalendarIntegrationService
+    @ObservedObject var meetingDetection: MeetingDetectionService
     @ObservedObject var appSettings: AppSettingsStore
     @Environment(\.openWindow) private var openWindow
     @State private var recordScreen = false
@@ -199,6 +200,22 @@ struct MenuBarPopoverView: View {
                 UpcomingMeetingBanner(event: event) {
                     meetingManager.toggleRecording()
                 }
+                Divider().padding(.vertical, 4)
+            } else if let detectedApp = meetingDetection.pendingPrompt,
+                      !meetingManager.audioRecorder.isRecording {
+                AppDetectedBanner(
+                    app: detectedApp,
+                    onRecord: {
+                        meetingDetection.dismissPrompt()
+                        meetingManager.toggleRecording()
+                    },
+                    onDismiss: {
+                        meetingDetection.dismissPrompt()
+                    },
+                    onSilence: {
+                        meetingDetection.silenceApp(bundleID: detectedApp.bundleID)
+                    }
+                )
                 Divider().padding(.vertical, 4)
             } else {
                 Divider().padding(.vertical, 8)
@@ -470,6 +487,7 @@ struct MenuBarPopoverView: View {
     
     private func stopRecording() {
         let audioURL = meetingManager.audioRecorder.stopRecording()
+        let calendarContext = meetingManager.consumeActiveCalendarContext()
         Task {
             var screenURL: URL? = nil
             if recordScreen {
@@ -478,7 +496,8 @@ struct MenuBarPopoverView: View {
             await meetingManager.finishRecording(
                 audioURL: audioURL,
                 screenRecordingURL: screenURL,
-                duration: meetingManager.audioRecorder.currentDuration
+                duration: meetingManager.audioRecorder.currentDuration,
+                calendarContext: calendarContext
             )
         }
     }

@@ -22,6 +22,21 @@ final class MeetingManager: ObservableObject {
     /// (e.g. "Speaker 1"). Used when the user opts to remember a voice.
     private var pendingSpeakerEmbeddings: [String: [Float]] = [:]
 
+    /// Calendar event that was active when the current recording started, if any.
+    /// Used to auto-title meetings on finishRecording.
+    private var activeCalendarContext: CalendarIntegrationService.UpcomingEvent?
+
+    /// Weak reference to the calendar service so `toggleRecording` can pull the
+    /// most relevant upcoming event at start-time.
+    weak var calendarServiceRef: CalendarIntegrationService?
+
+    /// Consume and return the active calendar context — clears it from memory.
+    func consumeActiveCalendarContext() -> CalendarIntegrationService.UpcomingEvent? {
+        let context = activeCalendarContext
+        activeCalendarContext = nil
+        return context
+    }
+
     // Expose transcription service state for UI
     var transcriptionState: TranscriptionState {
         transcriptionService.state
@@ -72,6 +87,10 @@ final class MeetingManager: ObservableObject {
     /// Start a live-streaming transcription session that runs alongside the
     /// normal file-based recording. Call after the audio tap is installed.
     func startLiveTranscription() async {
+        // Snapshot any upcoming calendar event so the meeting gets auto-titled on stop.
+        activeCalendarContext = calendarServiceRef?.upcomingEvents
+            .min(by: { $0.startDate < $1.startDate })
+
         guard let models = transcriptionService.loadedModels else { return }
 
         // Forward tap buffers into the sliding-window manager
@@ -84,23 +103,29 @@ final class MeetingManager: ObservableObject {
     }
 
     /// Called when recording stops. Triggers post-processing pipeline.
+    /// - Parameter calendarContext: Optional calendar event that was active when the recording started.
+    ///   Used to auto-title the meeting and link it back to the calendar event.
     func finishRecording(
         audioURL: URL?,
         screenRecordingURL: URL?,
-        duration: TimeInterval
+        duration: TimeInterval,
+        calendarContext: CalendarIntegrationService.UpcomingEvent? = nil
     ) async {
         // Tear down live streaming — full-file transcription replaces it below.
         audioRecorder.onAudioBuffer = nil
         streamingTranscription.stop()
 
         guard let audioURL = audioURL else { return }
-        
-        // Create meeting record
+
+        // Prefer the active calendar event's title over a timestamp-based fallback.
+        let title = calendarContext?.title ?? "Meeting \(formattedDate())"
+
         let meeting = Meeting(
-            title: "Meeting \(formattedDate())",
+            title: title,
             date: Date(),
             duration: duration
         )
+        meeting.calendarEventIdentifier = calendarContext?.id
         
         // Store file bookmarks + plain path fallback
         meeting.audioFileBookmark = try? audioURL.bookmarkData()
@@ -326,11 +351,14 @@ final class MeetingManager: ObservableObject {
     func toggleRecording() {
         if audioRecorder.isRecording {
             let audioURL = audioRecorder.stopRecording()
+            let context = activeCalendarContext
+            activeCalendarContext = nil
             Task {
                 await finishRecording(
                     audioURL: audioURL,
                     screenRecordingURL: nil,
-                    duration: audioRecorder.currentDuration
+                    duration: audioRecorder.currentDuration,
+                    calendarContext: context
                 )
             }
         } else {

@@ -128,7 +128,23 @@ final class CalendarIntegrationService: ObservableObject {
     // MARK: - Helpers
 
     private func videoURL(in event: EKEvent) -> URL? {
-        let patterns = ["zoom.us", "teams.microsoft.com", "meet.google.com", "whereby.com"]
+        let patterns = [
+            "zoom.us",
+            "teams.microsoft.com",
+            "teams.live.com",
+            "meet.google.com",
+            "whereby.com",
+            "kumospace.com",
+            "gather.town",
+            "around.co",
+            "meet.jit.si",
+            "discord.com/channels",
+            "discord.gg",
+            "chime.aws",
+            "bluejeans.com",
+            "gotomeeting.com",
+            "webex.com"
+        ]
 
         if let eventURL = event.url,
            let host = eventURL.host?.lowercased(),
