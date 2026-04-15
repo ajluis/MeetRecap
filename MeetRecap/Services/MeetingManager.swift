@@ -74,9 +74,7 @@ final class MeetingManager: ObservableObject {
         self.streamingTranscription = StreamingTranscriptionService()
         self.speakerProfileService = SpeakerProfileService()
         self.semanticSearch = SemanticSearchService()
-        let search = self.semanticSearch
-        let summary = self.summaryService
-        self.chatService = MeetingChatService(semanticSearch: search, summaryService: summary)
+        self.chatService = MeetingChatService(semanticSearch: self.semanticSearch)
     }
     
     func configure(modelContext: ModelContext, appSettings: AppSettingsStore) {
@@ -300,15 +298,18 @@ final class MeetingManager: ObservableObject {
                 }
                 .joined(separator: "\n")
             
-            let provider = appSettings?.selectedSummaryProvider ?? .openai
-            let openAIKey = KeychainHelper.load(key: "meetrecap_openai_key")
-            let claudeKey = KeychainHelper.load(key: "meetrecap_claude_key")
-            
+            guard let openRouterKey = KeychainHelper.load(key: "meetrecap_openrouter_key"),
+                  !openRouterKey.isEmpty else {
+                throw SummaryError.missingAPIKey("Add an OpenRouter API key in Settings → API Keys to enable summaries.")
+            }
+            let model = appSettings?.openRouterModel ?? "z-ai/glm-4.6"
+            let effort = appSettings?.selectedReasoningEffort ?? .low
+
             let summaryResult = try await summaryService.generateSummary(
                 transcript: transcriptText,
-                provider: provider,
-                openAIAPIKey: openAIKey,
-                claudeAPIKey: claudeKey
+                apiKey: openRouterKey,
+                model: model,
+                reasoningEffort: effort
             )
             
             // Update meeting

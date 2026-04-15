@@ -20,14 +20,21 @@ enum ParakeetVersion: String, Codable, CaseIterable {
     }
 }
 
-enum SummaryProvider: String, Codable, CaseIterable {
-    case openai = "openai"
-    case claude = "claude"
-    
+/// Supported reasoning efforts passed through OpenRouter's `reasoning.effort` field.
+/// `low` is the default — it keeps latency + cost down while still giving GLM the benefit of
+/// chain-of-thought on hard questions.
+enum ReasoningEffort: String, Codable, CaseIterable {
+    case minimal = "minimal"
+    case low = "low"
+    case medium = "medium"
+    case high = "high"
+
     var displayName: String {
         switch self {
-        case .openai: return "OpenAI (GPT-4o)"
-        case .claude: return "Claude (Sonnet)"
+        case .minimal: return "Minimal"
+        case .low: return "Low (recommended)"
+        case .medium: return "Medium"
+        case .high: return "High"
         }
     }
 }
@@ -36,7 +43,8 @@ enum SummaryProvider: String, Codable, CaseIterable {
 final class AppSettings {
     @Attribute(.unique) var id: String
     var parakeetVersion: String  // ParakeetVersion rawValue
-    var summaryProvider: String  // SummaryProvider rawValue
+    var openRouterModel: String  // e.g. "z-ai/glm-4.6"
+    var reasoningEffort: String  // ReasoningEffort rawValue
     var autoTranscribe: Bool
     var autoSummarize: Bool
     var launchAtLogin: Bool
@@ -53,7 +61,8 @@ final class AppSettings {
     init() {
         self.id = "app_settings"
         self.parakeetVersion = ParakeetVersion.v3.rawValue
-        self.summaryProvider = SummaryProvider.openai.rawValue
+        self.openRouterModel = "z-ai/glm-4.6"
+        self.reasoningEffort = ReasoningEffort.low.rawValue
         self.autoTranscribe = true
         self.autoSummarize = true
         self.launchAtLogin = false
@@ -72,9 +81,9 @@ final class AppSettings {
         get { ParakeetVersion(rawValue: parakeetVersion) ?? .v3 }
         set { parakeetVersion = newValue.rawValue }
     }
-    
-    var selectedSummaryProvider: SummaryProvider {
-        get { SummaryProvider(rawValue: summaryProvider) ?? .openai }
-        set { summaryProvider = newValue.rawValue }
+
+    var selectedReasoningEffort: ReasoningEffort {
+        get { ReasoningEffort(rawValue: reasoningEffort) ?? .low }
+        set { reasoningEffort = newValue.rawValue }
     }
 }

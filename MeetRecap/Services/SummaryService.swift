@@ -13,57 +13,56 @@ enum SummaryState: Equatable {
     case generating
     case completed
     case failed(String)
-    
+
     static func == (lhs: SummaryState, rhs: SummaryState) -> Bool {
         switch (lhs, rhs) {
         case (.idle, .idle), (.generating, .generating), (.completed, .completed):
             return true
-        case (.failed(let a), .failed(let b)):
-            return a == b
-        default:
-            return false
+        case (.failed(let a), .failed(let b)): return a == b
+        default: return false
         }
     }
 }
 
+/// Turns a transcript into a structured `MeetingSummary` by calling OpenRouter.
+///
+/// OpenRouter exposes an OpenAI-compatible Chat Completions endpoint and supports a
+/// `reasoning.effort` field that's passed through to reasoning-capable models like GLM-4.6.
+/// We keep `effort = .low` by default so the summary stays snappy.
 @MainActor
 final class SummaryService: ObservableObject {
     @Published var state: SummaryState = .idle
-    
+
+    private let endpoint = URL(string: "https://openrouter.ai/api/v1/chat/completions")!
     private let urlSession: URLSession
-    
+
     init() {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 120
         config.timeoutIntervalForResource = 300
         self.urlSession = URLSession(configuration: config)
     }
-    
-    // MARK: - Summary Generation
-    
+
+    // MARK: - Public API
+
+    /// Generate a meeting summary. Throws if the OpenRouter key is missing or the API errors out.
     func generateSummary(
         transcript: String,
-        provider: SummaryProvider,
-        openAIAPIKey: String? = nil,
-        claudeAPIKey: String? = nil
+        apiKey: String,
+        model: String,
+        reasoningEffort: ReasoningEffort
     ) async throws -> MeetingSummary {
+        guard !apiKey.isEmpty else {
+            throw SummaryError.missingAPIKey("OpenRouter API key not configured")
+        }
         state = .generating
-        
         do {
-            let summary: MeetingSummary
-            switch provider {
-            case .openai:
-                guard let apiKey = openAIAPIKey, !apiKey.isEmpty else {
-                    throw SummaryError.missingAPIKey("OpenAI API key not configured")
-                }
-                summary = try await callOpenAI(transcript: transcript, apiKey: apiKey)
-            case .claude:
-                guard let apiKey = claudeAPIKey, !apiKey.isEmpty else {
-                    throw SummaryError.missingAPIKey("Claude API key not configured")
-                }
-                summary = try await callClaude(transcript: transcript, apiKey: apiKey)
-            }
-            
+            let summary = try await call(
+                transcript: transcript,
+                apiKey: apiKey,
+                model: model,
+                reasoningEffort: reasoningEffort
+            )
             state = .completed
             return summary
         } catch {
@@ -71,151 +70,120 @@ final class SummaryService: ObservableObject {
             throw error
         }
     }
-    
-    // MARK: - OpenAI API
-    
-    private func callOpenAI(transcript: String, apiKey: String) async throws -> MeetingSummary {
-        let url = URL(string: "https://api.openai.com/v1/chat/completions")!
-        
-        var request = URLRequest(url: url)
+
+    // MARK: - OpenRouter Call
+
+    private func call(
+        transcript: String,
+        apiKey: String,
+        model: String,
+        reasoningEffort: ReasoningEffort
+    ) async throws -> MeetingSummary {
+        var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
         request.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.addValue("application/json", forHTTPHeaderField: "Content-Type")
-        
+        request.addValue("https://meetrecap.app", forHTTPHeaderField: "HTTP-Referer")
+        request.addValue("MeetRecap", forHTTPHeaderField: "X-Title")
+
         let body: [String: Any] = [
-            "model": "gpt-4o",
+            "model": model,
+            "temperature": 0.2,
+            "response_format": ["type": "json_object"],
+            "reasoning": ["effort": reasoningEffort.rawValue],
             "messages": [
-                [
-                    "role": "system",
-                    "content": summarySystemPrompt
-                ],
-                [
-                    "role": "user",
-                    "content": "Please analyze this meeting transcript:\n\n\(transcript)"
-                ]
-            ],
-            "temperature": 0.3,
-            "response_format": ["type": "json_object"]
-        ]
-        
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
-        let (data, response) = try await urlSession.data(for: request)
-        
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw SummaryError.invalidResponse
-        }
-        
-        guard httpResponse.statusCode == 200 else {
-            let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
-            throw SummaryError.apiError("OpenAI API error (\(httpResponse.statusCode)): \(errorMessage)")
-        }
-        
-        return try parseOpenAIResponse(data)
-    }
-    
-    private func parseOpenAIResponse(_ data: Data) throws -> MeetingSummary {
-        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let choices = json["choices"] as? [[String: Any]],
-              let firstChoice = choices.first,
-              let message = firstChoice["message"] as? [String: Any],
-              let content = message["content"] as? String else {
-            throw SummaryError.parseError("Invalid OpenAI response format")
-        }
-        
-        return try parseSummaryJSON(content)
-    }
-    
-    // MARK: - Claude API
-    
-    private func callClaude(transcript: String, apiKey: String) async throws -> MeetingSummary {
-        let url = URL(string: "https://api.anthropic.com/v1/messages")!
-        
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.addValue(apiKey, forHTTPHeaderField: "x-api-key")
-        request.addValue("application/json", forHTTPHeaderField: "content-type")
-        request.addValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
-        
-        let body: [String: Any] = [
-            "model": "claude-sonnet-4-20250514",
-            "max_tokens": 2048,
-            "system": summarySystemPrompt,
-            "messages": [
-                [
-                    "role": "user",
-                    "content": "Please analyze this meeting transcript:\n\n\(transcript)"
-                ]
+                ["role": "system", "content": Self.systemPrompt],
+                ["role": "user", "content": Self.userPrompt(for: transcript)]
             ]
         ]
-        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
+
         let (data, response) = try await urlSession.data(for: request)
-        
-        guard let httpResponse = response as? HTTPURLResponse else {
+        guard let http = response as? HTTPURLResponse else {
             throw SummaryError.invalidResponse
         }
-        
-        guard httpResponse.statusCode == 200 else {
-            let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
-            throw SummaryError.apiError("Claude API error (\(httpResponse.statusCode)): \(errorMessage)")
+        guard http.statusCode == 200 else {
+            let msg = String(data: data, encoding: .utf8) ?? "HTTP \(http.statusCode)"
+            throw SummaryError.apiError("OpenRouter error (\(http.statusCode)): \(msg)")
         }
-        
-        return try parseClaudeResponse(data)
+        return try parse(data: data)
     }
-    
-    private func parseClaudeResponse(_ data: Data) throws -> MeetingSummary {
+
+    private func parse(data: Data) throws -> MeetingSummary {
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let content = json["content"] as? [[String: Any]],
-              let firstContent = content.first,
-              let text = firstContent["text"] as? String else {
-            throw SummaryError.parseError("Invalid Claude response format")
+              let choices = json["choices"] as? [[String: Any]],
+              let first = choices.first,
+              let message = first["message"] as? [String: Any],
+              let content = message["content"] as? String else {
+            throw SummaryError.parseError("Unexpected OpenRouter response shape")
         }
-        
-        return try parseSummaryJSON(text)
+        return try decodeSummaryJSON(content)
     }
-    
-    // MARK: - JSON Parsing
-    
-    private func parseSummaryJSON(_ jsonString: String) throws -> MeetingSummary {
-        guard let data = jsonString.data(using: .utf8) else {
-            throw SummaryError.parseError("Failed to convert string to data")
+
+    private func decodeSummaryJSON(_ text: String) throws -> MeetingSummary {
+        let cleaned = stripCodeFences(text).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let jsonData = cleaned.data(using: .utf8) else {
+            throw SummaryError.parseError("Empty response")
         }
-        
         do {
-            let summary = try JSONDecoder().decode(MeetingSummary.self, from: data)
-            return summary
+            return try JSONDecoder().decode(MeetingSummary.self, from: jsonData)
         } catch {
-            // Try to extract JSON from markdown code blocks
-            if let range = jsonString.range(of: "```json") {
-                let afterJson = jsonString[range.upperBound...]
-                if let endRange = afterJson.range(of: "```") {
-                    let jsonContent = String(afterJson[afterJson.startIndex..<endRange.lowerBound])
-                    if let jsonData = jsonContent.trimmingCharacters(in: .whitespacesAndNewlines).data(using: .utf8) {
-                        return try JSONDecoder().decode(MeetingSummary.self, from: jsonData)
-                    }
-                }
-            }
             throw SummaryError.parseError("Failed to parse summary JSON: \(error.localizedDescription)")
         }
     }
-    
-    // MARK: - Prompts
-    
-    private var summarySystemPrompt: String {
-        """
-        You are an AI assistant that analyzes meeting transcripts. 
-        Return a JSON object with exactly these fields:
-        {
-            "summary": "A concise 2-3 paragraph summary of the meeting",
-            "actionItems": ["List of specific action items mentioned", "..."],
-            "keyTopics": ["Main topics discussed", "..."],
-            "participants": ["Names of participants if identifiable", "..."]
+
+    /// Some models wrap JSON in ```json … ``` fences despite being told not to.
+    /// Strip them defensively.
+    private func stripCodeFences(_ text: String) -> String {
+        var out = text
+        if let start = out.range(of: "```json") {
+            out.removeSubrange(out.startIndex..<start.upperBound)
+        } else if let start = out.range(of: "```") {
+            out.removeSubrange(out.startIndex..<start.upperBound)
         }
-        
-        Be specific and actionable. Focus on decisions made, action items assigned, and key discussion points.
-        If participant names aren't clear, use "Speaker 1", "Speaker 2", etc.
+        if let end = out.range(of: "```", options: .backwards) {
+            out.removeSubrange(end.lowerBound..<out.endIndex)
+        }
+        return out
+    }
+}
+
+// MARK: - Prompts
+
+extension SummaryService {
+    /// Tight, opinionated system prompt tuned for a meeting-recap app.
+    /// Designed to force structured JSON and punchy, actionable content.
+    static let systemPrompt: String = """
+    You are MeetRecap's meeting summarizer. You read a single meeting transcript and \
+    return a structured JSON object describing what actually happened.
+
+    Output requirements (NON-NEGOTIABLE):
+    - Return ONE valid JSON object. No markdown fences, no prose before or after.
+    - Schema:
+      {
+        "summary": string,               // 3-5 sentences, focus on decisions and outcomes, not topics discussed
+        "keyTopics": [string],           // 3-7 short noun phrases (2-5 words each). Topics, not sentences.
+        "actionItems": [string],         // Specific commitments. Format: "<Owner>: <verb-phrase> [by <deadline>]". Omit if no owner is clear.
+        "participants": [string]         // Names of people who spoke. Use "Speaker 1" etc. only if names aren't identifiable.
+      }
+
+    Rules:
+    - Prefer "what was decided" over "what was discussed".
+    - Skip filler, smalltalk, scheduling chatter, and re-stating of prior points.
+    - An action item WITHOUT an owner is almost always noise — omit it.
+    - Do not invent names, dates, or commitments that aren't in the transcript.
+    - Write in past-tense third person. Do not address the user.
+    - If the transcript is empty or nonsensical, return all four fields as empty arrays / strings.
+    """
+
+    static func userPrompt(for transcript: String) -> String {
+        """
+        Transcript:
+        ---
+        \(transcript)
+        ---
+
+        Return the JSON object now.
         """
     }
 }
@@ -227,7 +195,7 @@ enum SummaryError: LocalizedError {
     case invalidResponse
     case apiError(String)
     case parseError(String)
-    
+
     var errorDescription: String? {
         switch self {
         case .missingAPIKey(let msg): return msg

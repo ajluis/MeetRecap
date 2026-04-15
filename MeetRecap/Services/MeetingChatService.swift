@@ -15,13 +15,13 @@ struct ChatMessage: Identifiable {
     }
 }
 
-/// Chat-with-the-meeting: RAG over a single meeting's transcript.
+/// Chat-with-this-meeting over OpenRouter.
 ///
 /// Flow per user message:
-///  1. Semantically retrieve the top-K most relevant segments from the meeting.
-///  2. Build a context block citing those segments (with timestamps + speakers).
-///  3. Ask the configured LLM (OpenAI / Claude) to answer strictly from the context.
-///  4. Surface the answer alongside the citations used.
+///  1. Semantic-retrieve the 8 most relevant segments from the meeting.
+///  2. Build a timestamped context block.
+///  3. Ask GLM via OpenRouter to answer strictly from the context.
+///  4. Surface citations as clickable timestamps in the UI.
 @MainActor
 final class MeetingChatService: ObservableObject {
     @Published private(set) var messages: [ChatMessage] = []
@@ -29,11 +29,14 @@ final class MeetingChatService: ObservableObject {
     @Published var errorMessage: String?
 
     private let semanticSearch: SemanticSearchService
-    private let summaryService: SummaryService
+    private let endpoint = URL(string: "https://openrouter.ai/api/v1/chat/completions")!
+    private let urlSession: URLSession
 
-    init(semanticSearch: SemanticSearchService, summaryService: SummaryService) {
+    init(semanticSearch: SemanticSearchService) {
         self.semanticSearch = semanticSearch
-        self.summaryService = summaryService
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 120
+        self.urlSession = URLSession(configuration: config)
     }
 
     func reset() {
@@ -41,13 +44,16 @@ final class MeetingChatService: ObservableObject {
         errorMessage = nil
     }
 
+    // MARK: - Send
+
     /// Send a user message for the given meeting and await the assistant reply.
     func send(
         question: String,
         meeting: Meeting,
-        provider: SummaryProvider,
-        openAIKey: String?,
-        claudeKey: String?
+        openAIEmbeddingKey: String?,
+        openRouterKey: String?,
+        model: String,
+        reasoningEffort: ReasoningEffort
     ) async {
         let trimmed = question.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
@@ -55,42 +61,44 @@ final class MeetingChatService: ObservableObject {
         messages.append(ChatMessage(role: .user, text: trimmed))
         isStreaming = true
         errorMessage = nil
-
         defer { isStreaming = false }
 
-        // Retrieval step needs the OpenAI embeddings key regardless of the chat provider.
-        guard let openAIKey = openAIKey, !openAIKey.isEmpty else {
-            errorMessage = "Chat requires an OpenAI API key (used for retrieval). Add one in Settings."
+        guard let openRouterKey = openRouterKey, !openRouterKey.isEmpty else {
+            errorMessage = "Add an OpenRouter API key in Settings to enable chat."
             return
         }
 
+        // Retrieval (needs OpenAI embeddings key). Falls back to full transcript if not configured.
         let citations: [SemanticSearchResult]
-        do {
-            citations = try await semanticSearch.topSegments(
-                inMeeting: meeting.id,
-                query: trimmed,
-                topK: 8,
-                apiKey: openAIKey
-            )
-        } catch {
-            errorMessage = "Retrieval failed: \(error.localizedDescription)"
-            return
+        if let openAIKey = openAIEmbeddingKey, !openAIKey.isEmpty {
+            do {
+                citations = try await semanticSearch.topSegments(
+                    inMeeting: meeting.id,
+                    query: trimmed,
+                    topK: 8,
+                    apiKey: openAIKey
+                )
+            } catch {
+                errorMessage = "Retrieval failed: \(error.localizedDescription)"
+                return
+            }
+        } else {
+            citations = []
         }
 
-        // If no citations came back (e.g. meeting wasn't embedded), fall back to the full transcript.
         let contextBlock = citations.isEmpty
             ? Self.fullTranscript(of: meeting)
             : Self.contextBlock(from: citations)
 
         let answer: String
         do {
-            answer = try await ask(
+            answer = try await askOpenRouter(
                 question: trimmed,
                 context: contextBlock,
-                history: messages.dropLast(),  // exclude the user message we just appended
-                provider: provider,
-                openAIKey: openAIKey,
-                claudeKey: claudeKey
+                history: Array(messages.dropLast()),
+                apiKey: openRouterKey,
+                model: model,
+                reasoningEffort: reasoningEffort
             )
         } catch {
             errorMessage = error.localizedDescription
@@ -100,121 +108,85 @@ final class MeetingChatService: ObservableObject {
         messages.append(ChatMessage(role: .assistant, text: answer, citations: citations))
     }
 
-    // MARK: - LLM Call
+    // MARK: - OpenRouter
 
-    private func ask(
+    private func askOpenRouter(
         question: String,
         context: String,
-        history: some Sequence<ChatMessage>,
-        provider: SummaryProvider,
-        openAIKey: String,
-        claudeKey: String?
+        history: [ChatMessage],
+        apiKey: String,
+        model: String,
+        reasoningEffort: ReasoningEffort
     ) async throws -> String {
-        let systemPrompt = """
-        You are a helpful assistant that answers questions about a single meeting transcript.
-        Only answer from the provided context. If the context doesn't contain the answer, say so plainly.
-        Keep answers concise (2–4 sentences) unless the user asks for more detail.
-        When you cite specific moments, reference them by their [HH:MM] timestamp so the user can jump to them.
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.addValue("https://meetrecap.app", forHTTPHeaderField: "HTTP-Referer")
+        request.addValue("MeetRecap", forHTTPHeaderField: "X-Title")
 
-        --- MEETING CONTEXT ---
-        \(context)
-        --- END CONTEXT ---
-        """
-
-        switch provider {
-        case .openai:
-            return try await callOpenAI(
-                system: systemPrompt,
-                history: Array(history),
-                userMessage: question,
-                apiKey: openAIKey
-            )
-        case .claude:
-            guard let claudeKey = claudeKey, !claudeKey.isEmpty else {
-                // Gracefully fall back to OpenAI if Claude key isn't configured.
-                return try await callOpenAI(
-                    system: systemPrompt,
-                    history: Array(history),
-                    userMessage: question,
-                    apiKey: openAIKey
-                )
-            }
-            return try await callClaude(
-                system: systemPrompt,
-                history: Array(history),
-                userMessage: question,
-                apiKey: claudeKey
-            )
-        }
-    }
-
-    private func callOpenAI(system: String, history: [ChatMessage], userMessage: String, apiKey: String) async throws -> String {
-        var url = URLRequest(url: URL(string: "https://api.openai.com/v1/chat/completions")!)
-        url.httpMethod = "POST"
-        url.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        url.addValue("application/json", forHTTPHeaderField: "Content-Type")
-
-        var messages: [[String: Any]] = [["role": "system", "content": system]]
+        var messages: [[String: Any]] = [
+            ["role": "system", "content": Self.systemPrompt(context: context)]
+        ]
         for message in history where message.role != .system {
             messages.append(["role": message.role.rawValue, "content": message.text])
         }
-        messages.append(["role": "user", "content": userMessage])
+        messages.append(["role": "user", "content": question])
 
         let body: [String: Any] = [
-            "model": "gpt-4o",
+            "model": model,
             "messages": messages,
-            "temperature": 0.2
+            "temperature": 0.2,
+            "reasoning": ["effort": reasoningEffort.rawValue]
         ]
-        url.httpBody = try JSONSerialization.data(withJSONObject: body)
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        let (data, response) = try await URLSession.shared.data(for: url)
+        let (data, response) = try await urlSession.data(for: request)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             let msg = String(data: data, encoding: .utf8) ?? "HTTP error"
-            throw NSError(domain: "MeetingChatService.openai", code: 1, userInfo: [NSLocalizedDescriptionKey: msg])
+            throw NSError(
+                domain: "MeetingChatService",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "OpenRouter error: \(msg)"]
+            )
         }
 
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let choices = json["choices"] as? [[String: Any]],
               let message = choices.first?["message"] as? [String: Any],
               let content = message["content"] as? String else {
-            throw NSError(domain: "MeetingChatService.openai", code: 2, userInfo: [NSLocalizedDescriptionKey: "Bad response"])
+            throw NSError(
+                domain: "MeetingChatService",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "Unexpected OpenRouter response shape"]
+            )
         }
-        return content
+        return content.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private func callClaude(system: String, history: [ChatMessage], userMessage: String, apiKey: String) async throws -> String {
-        var url = URLRequest(url: URL(string: "https://api.anthropic.com/v1/messages")!)
-        url.httpMethod = "POST"
-        url.addValue(apiKey, forHTTPHeaderField: "x-api-key")
-        url.addValue("application/json", forHTTPHeaderField: "content-type")
-        url.addValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+    // MARK: - Prompt
 
-        var messages: [[String: Any]] = []
-        for message in history where message.role != .system {
-            messages.append(["role": message.role.rawValue, "content": message.text])
-        }
-        messages.append(["role": "user", "content": userMessage])
+    static func systemPrompt(context: String) -> String {
+        """
+        You are MeetRecap's meeting assistant. You answer questions about ONE meeting transcript \
+        using ONLY the context block below.
 
-        let body: [String: Any] = [
-            "model": "claude-sonnet-4-20250514",
-            "max_tokens": 1024,
-            "system": system,
-            "messages": messages
-        ]
-        url.httpBody = try JSONSerialization.data(withJSONObject: body)
+        Rules (follow all of them):
+        1. Answer strictly from the context. If the context doesn't contain the answer, reply \
+           exactly: "The transcript doesn't cover that." — do not guess, do not speculate.
+        2. Cite specific moments inline using `[HH:MM]` or `[H:MM:SS]` timestamps so the user can jump to them.
+        3. Be concise. Default to 2-4 short sentences. Expand only if the user explicitly asks for detail.
+        4. Identify people by their labeled speaker name; fall back to "Speaker 1", "Speaker 2" etc.
+        5. Never restate the question. Start with the answer.
+        6. Do not add closers like "Let me know if you need more." Do not hedge unnecessarily.
+        7. When asked "what was decided" or "action items", list them as tight bullet points, each \
+           with owner + commitment + timestamp.
+        8. Output plain text. No markdown headers, no code fences.
 
-        let (data, response) = try await URLSession.shared.data(for: url)
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-            let msg = String(data: data, encoding: .utf8) ?? "HTTP error"
-            throw NSError(domain: "MeetingChatService.claude", code: 1, userInfo: [NSLocalizedDescriptionKey: msg])
-        }
-
-        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let content = json["content"] as? [[String: Any]],
-              let text = content.first?["text"] as? String else {
-            throw NSError(domain: "MeetingChatService.claude", code: 2, userInfo: [NSLocalizedDescriptionKey: "Bad response"])
-        }
-        return text
+        --- MEETING CONTEXT ---
+        \(context)
+        --- END CONTEXT ---
+        """
     }
 
     // MARK: - Context Building
@@ -231,7 +203,7 @@ final class MeetingChatService: ObservableObject {
     private static func fullTranscript(of meeting: Meeting) -> String {
         meeting.segments
             .sorted { $0.orderIndex < $1.orderIndex }
-            .prefix(200)  // guardrail against very long transcripts
+            .prefix(200)
             .map { segment in
                 let ts = formatTimestamp(segment.startTime)
                 if let speaker = segment.speaker {
@@ -247,9 +219,7 @@ final class MeetingChatService: ObservableObject {
         let hours = total / 3600
         let minutes = (total % 3600) / 60
         let secs = total % 60
-        if hours > 0 {
-            return String(format: "%d:%02d:%02d", hours, minutes, secs)
-        }
+        if hours > 0 { return String(format: "%d:%02d:%02d", hours, minutes, secs) }
         return String(format: "%d:%02d", minutes, secs)
     }
 }

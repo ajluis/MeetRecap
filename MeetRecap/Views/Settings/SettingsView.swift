@@ -7,10 +7,10 @@ struct SettingsView: View {
     @ObservedObject var appSettings: AppSettingsStore
     @ObservedObject var transcriptionService: TranscriptionService
     
+    @State private var openRouterKey = ""
     @State private var openAIKey = ""
-    @State private var claudeKey = ""
+    @State private var showOpenRouterKey = false
     @State private var showOpenAIKey = false
-    @State private var showClaudeKey = false
     @State private var saveMessage: String?
     
     var body: some View {
@@ -132,13 +132,23 @@ struct SettingsView: View {
                     .onChange(of: appSettings.enableSpeakerDiarization) { _, _ in appSettings.save() }
             }
             
-            Section("AI Summary") {
-                Picker("Provider", selection: $appSettings.selectedSummaryProvider) {
-                    ForEach(SummaryProvider.allCases, id: \.self) { provider in
-                        Text(provider.displayName).tag(provider)
+            Section("AI Summary (OpenRouter)") {
+                HStack {
+                    Text("Model")
+                    Spacer()
+                    TextField("z-ai/glm-4.6", text: $appSettings.openRouterModel)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 240)
+                        .onSubmit { appSettings.save() }
+                }
+                .onChange(of: appSettings.openRouterModel) { _, _ in appSettings.save() }
+
+                Picker("Reasoning effort", selection: $appSettings.selectedReasoningEffort) {
+                    ForEach(ReasoningEffort.allCases, id: \.self) { effort in
+                        Text(effort.displayName).tag(effort)
                     }
                 }
-                .onChange(of: appSettings.selectedSummaryProvider) { _, _ in appSettings.save() }
+                .onChange(of: appSettings.selectedReasoningEffort) { _, _ in appSettings.save() }
             }
         }
         .formStyle(.grouped)
@@ -150,61 +160,45 @@ struct SettingsView: View {
     private var apiKeysTab: some View {
         Form {
             Section {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("API keys are stored securely in your macOS Keychain.")
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("API keys are stored in your macOS Keychain.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    
-                    HStack {
-                        Text("OpenAI API Key")
-                        Spacer()
-                        if showOpenAIKey {
-                            TextField("sk-...", text: $openAIKey)
-                                .textFieldStyle(.roundedBorder)
-                                .frame(width: 240)
-                        } else {
-                            SecureField("sk-...", text: $openAIKey)
-                                .textFieldStyle(.roundedBorder)
-                                .frame(width: 240)
-                        }
-                        Button {
-                            showOpenAIKey.toggle()
-                        } label: {
-                            Image(systemName: showOpenAIKey ? "eye.slash" : "eye")
-                        }
-                        .buttonStyle(.borderless)
-                    }
-                    
-                    HStack {
-                        Text("Claude API Key")
-                        Spacer()
-                        if showClaudeKey {
-                            TextField("sk-ant-...", text: $claudeKey)
-                                .textFieldStyle(.roundedBorder)
-                                .frame(width: 240)
-                        } else {
-                            SecureField("sk-ant-...", text: $claudeKey)
-                                .textFieldStyle(.roundedBorder)
-                                .frame(width: 240)
-                        }
-                        Button {
-                            showClaudeKey.toggle()
-                        } label: {
-                            Image(systemName: showClaudeKey ? "eye.slash" : "eye")
-                        }
-                        .buttonStyle(.borderless)
-                    }
+
+                    keyField(
+                        label: "OpenRouter API Key",
+                        placeholder: "sk-or-...",
+                        text: $openRouterKey,
+                        isVisible: $showOpenRouterKey
+                    )
+                    Text("Used for summaries and chat. GLM-4.6 by default.")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
                 }
             } header: {
-                Text("LLM API Keys (for summaries)")
+                Text("OpenRouter (summaries + chat)")
             }
-            
+
+            Section {
+                keyField(
+                    label: "OpenAI API Key",
+                    placeholder: "sk-...",
+                    text: $openAIKey,
+                    isVisible: $showOpenAIKey
+                )
+                Text("Used only for text embeddings (semantic search + chat retrieval). Optional but strongly recommended.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            } header: {
+                Text("OpenAI (embeddings)")
+            }
+
             Section {
                 Button("Save API Keys") {
                     saveAPIKeys()
                 }
                 .buttonStyle(.borderedProminent)
-                
+
                 if let message = saveMessage {
                     Text(message)
                         .font(.caption)
@@ -214,6 +208,34 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .padding()
+    }
+
+    private func keyField(
+        label: String,
+        placeholder: String,
+        text: Binding<String>,
+        isVisible: Binding<Bool>
+    ) -> some View {
+        HStack {
+            Text(label)
+            Spacer()
+            Group {
+                if isVisible.wrappedValue {
+                    TextField(placeholder, text: text)
+                } else {
+                    SecureField(placeholder, text: text)
+                }
+            }
+            .textFieldStyle(.roundedBorder)
+            .frame(width: 240)
+
+            Button {
+                isVisible.wrappedValue.toggle()
+            } label: {
+                Image(systemName: isVisible.wrappedValue ? "eye.slash" : "eye")
+            }
+            .buttonStyle(.borderless)
+        }
     }
     
     // MARK: - Transcription Tab
@@ -277,19 +299,19 @@ struct SettingsView: View {
     // MARK: - Keychain Helpers
     
     private func loadAPIKeys() {
+        openRouterKey = KeychainHelper.load(key: "meetrecap_openrouter_key") ?? ""
         openAIKey = KeychainHelper.load(key: "meetrecap_openai_key") ?? ""
-        claudeKey = KeychainHelper.load(key: "meetrecap_claude_key") ?? ""
     }
-    
+
     private func saveAPIKeys() {
+        if !openRouterKey.isEmpty {
+            KeychainHelper.save(key: "meetrecap_openrouter_key", value: openRouterKey)
+        }
         if !openAIKey.isEmpty {
             KeychainHelper.save(key: "meetrecap_openai_key", value: openAIKey)
         }
-        if !claudeKey.isEmpty {
-            KeychainHelper.save(key: "meetrecap_claude_key", value: claudeKey)
-        }
         saveMessage = "API keys saved to Keychain"
-        
+
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
             saveMessage = nil
         }
@@ -330,7 +352,8 @@ struct ShortcutRow: View {
 @MainActor
 final class AppSettingsStore: ObservableObject {
     @Published var parakeetVersion: String
-    @Published var summaryProvider: String
+    @Published var openRouterModel: String
+    @Published var reasoningEffort: String
     @Published var autoTranscribe: Bool
     @Published var autoSummarize: Bool
     @Published var launchAtLogin: Bool
@@ -348,15 +371,16 @@ final class AppSettingsStore: ObservableObject {
         get { ParakeetVersion(rawValue: parakeetVersion) ?? .v3 }
         set { parakeetVersion = newValue.rawValue }
     }
-    
-    var selectedSummaryProvider: SummaryProvider {
-        get { SummaryProvider(rawValue: summaryProvider) ?? .openai }
-        set { summaryProvider = newValue.rawValue }
+
+    var selectedReasoningEffort: ReasoningEffort {
+        get { ReasoningEffort(rawValue: reasoningEffort) ?? .low }
+        set { reasoningEffort = newValue.rawValue }
     }
     
     init() {
         self.parakeetVersion = ParakeetVersion.v3.rawValue
-        self.summaryProvider = SummaryProvider.openai.rawValue
+        self.openRouterModel = "z-ai/glm-4.6"
+        self.reasoningEffort = ReasoningEffort.low.rawValue
         self.autoTranscribe = true
         self.autoSummarize = true
         self.launchAtLogin = false
@@ -379,7 +403,8 @@ final class AppSettingsStore: ObservableObject {
         let descriptor = FetchDescriptor<AppSettings>()
         if let settings = try? context.fetch(descriptor).first {
             parakeetVersion = settings.parakeetVersion
-            summaryProvider = settings.summaryProvider
+            openRouterModel = settings.openRouterModel
+            reasoningEffort = settings.reasoningEffort
             autoTranscribe = settings.autoTranscribe
             autoSummarize = settings.autoSummarize
             launchAtLogin = settings.launchAtLogin
@@ -405,7 +430,8 @@ final class AppSettingsStore: ObservableObject {
         }
         
         settings.parakeetVersion = parakeetVersion
-        settings.summaryProvider = summaryProvider
+        settings.openRouterModel = openRouterModel
+        settings.reasoningEffort = reasoningEffort
         settings.autoTranscribe = autoTranscribe
         settings.autoSummarize = autoSummarize
         settings.launchAtLogin = launchAtLogin

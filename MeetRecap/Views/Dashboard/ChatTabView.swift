@@ -10,8 +10,8 @@ struct ChatTabView: View {
     @FocusState private var inputFocused: Bool
 
     private var chat: MeetingChatService { meetingManager.chatService }
-    private var hasOpenAIKey: Bool {
-        (KeychainHelper.load(key: "meetrecap_openai_key") ?? "").isEmpty == false
+    private var hasOpenRouterKey: Bool {
+        (KeychainHelper.load(key: "meetrecap_openrouter_key") ?? "").isEmpty == false
     }
 
     var body: some View {
@@ -57,8 +57,8 @@ struct ChatTabView: View {
             }
             .padding(.top, 6)
 
-            if !hasOpenAIKey {
-                Label("Chat requires an OpenAI API key (Settings → API Keys)", systemImage: "exclamationmark.triangle")
+            if !hasOpenRouterKey {
+                Label("Chat requires an OpenRouter API key (Settings → API Keys)", systemImage: "exclamationmark.triangle")
                     .font(.caption)
                     .foregroundStyle(.orange)
                     .padding(.top, 6)
@@ -156,7 +156,7 @@ struct ChatTabView: View {
                 }
                 .buttonStyle(.plain)
                 .keyboardShortcut(.return, modifiers: [.command])
-                .disabled(input.trimmingCharacters(in: .whitespaces).isEmpty || chat.isStreaming || !hasOpenAIKey)
+                .disabled(input.trimmingCharacters(in: .whitespaces).isEmpty || chat.isStreaming || !hasOpenRouterKey)
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
@@ -169,14 +169,15 @@ struct ChatTabView: View {
         let question = input
         input = ""
         Task {
+            let openRouter = KeychainHelper.load(key: "meetrecap_openrouter_key")
             let openAI = KeychainHelper.load(key: "meetrecap_openai_key")
-            let claude = KeychainHelper.load(key: "meetrecap_claude_key")
             await chat.send(
                 question: question,
                 meeting: meeting,
-                provider: appSettings.selectedSummaryProvider,
-                openAIKey: openAI,
-                claudeKey: claude
+                openAIEmbeddingKey: openAI,
+                openRouterKey: openRouter,
+                model: appSettings.openRouterModel,
+                reasoningEffort: appSettings.selectedReasoningEffort
             )
         }
     }
