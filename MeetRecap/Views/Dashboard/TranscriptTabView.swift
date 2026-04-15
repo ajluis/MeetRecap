@@ -3,10 +3,12 @@ import SwiftUI
 struct TranscriptTabView: View {
     let meeting: Meeting
     @ObservedObject var playback: AudioPlaybackService
+    @ObservedObject var meetingManager: MeetingManager
 
     @State private var searchText = ""
     @State private var manualHighlightID: UUID?
     @State private var isEditingSpeaker: UUID?
+    @State private var rememberVoice: Bool = true
 
     @Environment(\.modelContext) private var modelContext
 
@@ -72,6 +74,18 @@ struct TranscriptTabView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+
+            Spacer()
+
+            Toggle(isOn: $rememberVoice) {
+                Label("Remember voice", systemImage: "person.wave.2")
+                    .labelStyle(.iconOnly)
+            }
+            .toggleStyle(.button)
+            .controlSize(.small)
+            .help(rememberVoice
+                  ? "Renaming a speaker will save a voice profile for future auto-labeling"
+                  : "Renaming a speaker will only affect this meeting")
         }
         .padding(10)
         .background(.quaternary.opacity(0.5))
@@ -123,14 +137,19 @@ struct TranscriptTabView: View {
 
     private func renameSpeaker(oldName: String?, newName: String) {
         let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, oldName != trimmed else { return }
+        guard !trimmed.isEmpty, oldName != trimmed, let oldName = oldName else { return }
 
-        // Rename all segments in this meeting that had the old speaker label.
-        for segment in meeting.segments where segment.speaker == oldName {
-            segment.speaker = trimmed
+        if rememberVoice {
+            // Save a voice profile so this speaker is auto-labeled in future meetings.
+            meetingManager.rememberSpeaker(rawLabel: oldName, as: trimmed, on: meeting)
+        } else {
+            // Just rename in this meeting.
+            for segment in meeting.segments where segment.speaker == oldName {
+                segment.speaker = trimmed
+            }
+            meeting.updatedAt = Date()
+            try? modelContext.save()
         }
-        meeting.updatedAt = Date()
-        try? modelContext.save()
     }
 
     // MARK: - Empty State

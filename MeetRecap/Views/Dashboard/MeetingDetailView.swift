@@ -24,7 +24,11 @@ struct MeetingDetailView: View {
                     }
                     .tag(0)
 
-                TranscriptTabView(meeting: meeting, playback: meetingManager.audioPlayback)
+                TranscriptTabView(
+                    meeting: meeting,
+                    playback: meetingManager.audioPlayback,
+                    meetingManager: meetingManager
+                )
                     .tabItem {
                         Label("Transcript", systemImage: "text.quote")
                     }

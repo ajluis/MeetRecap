@@ -16,6 +16,11 @@ final class MeetingManager: ObservableObject {
     let audioDeviceManager: AudioDeviceManager
     let audioPlayback: AudioPlaybackService
     let streamingTranscription: StreamingTranscriptionService
+    let speakerProfileService: SpeakerProfileService
+
+    /// Speaker embeddings from the most recent transcription, keyed by raw speaker ID
+    /// (e.g. "Speaker 1"). Used when the user opts to remember a voice.
+    private var pendingSpeakerEmbeddings: [String: [Float]] = [:]
 
     // Expose transcription service state for UI
     var transcriptionState: TranscriptionState {
@@ -33,12 +38,15 @@ final class MeetingManager: ObservableObject {
         self.audioDeviceManager = AudioDeviceManager()
         self.audioPlayback = AudioPlaybackService()
         self.streamingTranscription = StreamingTranscriptionService()
+        self.speakerProfileService = SpeakerProfileService()
     }
     
     func configure(modelContext: ModelContext, appSettings: AppSettingsStore) {
         self.modelContext = modelContext
         self.appSettings = appSettings
-        
+        self.speakerProfileService.configure(modelContext: modelContext)
+        self.speakerProfileService.matchThreshold = Float(appSettings.speakerMatchThreshold)
+
         // Load transcription model
         Task {
             await loadTranscriptionModel()
@@ -148,10 +156,21 @@ final class MeetingManager: ObservableObject {
                 transcriptSegment.meeting = meeting
                 modelContext?.insert(transcriptSegment)
             }
-            
+
             meeting.isTranscribed = true
             meeting.updatedAt = Date()
             try? modelContext?.save()
+
+            // Speaker profile matching — auto-label known voices.
+            if let embeddings = result.speakerEmbeddings, !embeddings.isEmpty {
+                pendingSpeakerEmbeddings = embeddings
+                let matches = speakerProfileService.matchSpeakers(meetingEmbeddings: embeddings)
+                if !matches.isEmpty {
+                    speakerProfileService.applyMatches(matches, to: meeting)
+                }
+            } else {
+                pendingSpeakerEmbeddings = [:]
+            }
             
             processingStatus = "Transcription complete"
             
@@ -246,6 +265,33 @@ final class MeetingManager: ObservableObject {
         meeting.title = newTitle
         meeting.updatedAt = Date()
         try? modelContext?.save()
+    }
+
+    // MARK: - Speaker Profiles
+
+    /// Create or update a SpeakerProfile for the given speaker label on a meeting.
+    /// Uses the last-stored embeddings from the most recent transcription.
+    @discardableResult
+    func rememberSpeaker(rawLabel: String, as name: String, on meeting: Meeting) -> SpeakerProfile? {
+        // Prefer freshly-computed embeddings from this run.
+        if let embedding = pendingSpeakerEmbeddings[rawLabel] {
+            let profile = speakerProfileService.createOrUpdateProfile(name: name, embedding: embedding)
+            if let profile = profile {
+                for segment in meeting.segments where segment.speaker == rawLabel {
+                    segment.speaker = name
+                    segment.speakerProfileID = profile.id
+                }
+                try? modelContext?.save()
+            }
+            return profile
+        }
+
+        // Fallback: if we don't have fresh embeddings, still rename on this meeting.
+        for segment in meeting.segments where segment.speaker == rawLabel {
+            segment.speaker = name
+        }
+        try? modelContext?.save()
+        return nil
     }
 
     // MARK: - Tagging

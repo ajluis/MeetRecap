@@ -31,6 +31,21 @@ struct TranscriptionResult {
     let segments: [TranscriptResultSegment]
     let fullText: String
     let duration: TimeInterval
+    /// Speaker ID → L2-normalized 256-dim voice embedding. Only populated when
+    /// diarization ran successfully.
+    let speakerEmbeddings: [String: [Float]]?
+
+    init(
+        segments: [TranscriptResultSegment],
+        fullText: String,
+        duration: TimeInterval,
+        speakerEmbeddings: [String: [Float]]? = nil
+    ) {
+        self.segments = segments
+        self.fullText = fullText
+        self.duration = duration
+        self.speakerEmbeddings = speakerEmbeddings
+    }
 }
 
 struct TranscriptResultSegment {
@@ -148,7 +163,7 @@ final class TranscriptionService: ObservableObject {
             
             // Map speakers to transcript segments
             var diarizedSegments: [TranscriptResultSegment] = []
-            
+
             for segment in result.segments {
                 // Find matching speaker from diarization
                 let speaker = findSpeaker(
@@ -156,7 +171,7 @@ final class TranscriptionService: ObservableObject {
                     endTime: segment.endTime,
                     in: diarizationResult.segments
                 )
-                
+
                 diarizedSegments.append(TranscriptResultSegment(
                     text: segment.text,
                     startTime: segment.startTime,
@@ -165,11 +180,12 @@ final class TranscriptionService: ObservableObject {
                     confidence: segment.confidence
                 ))
             }
-            
+
             result = TranscriptionResult(
                 segments: diarizedSegments,
                 fullText: result.fullText,
-                duration: result.duration
+                duration: result.duration,
+                speakerEmbeddings: diarizationResult.speakerDatabase
             )
         } catch {
             // Diarization failed, return transcription without speakers

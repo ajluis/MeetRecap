@@ -39,6 +39,11 @@ struct SettingsView: View {
                 .tabItem {
                     Label("Calendar", systemImage: "calendar")
                 }
+
+            SpeakerProfilesView(appSettings: appSettings)
+                .tabItem {
+                    Label("Speakers", systemImage: "person.wave.2")
+                }
         }
         .frame(width: 520, height: 420)
         .onAppear {
