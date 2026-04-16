@@ -84,23 +84,44 @@ final class MeetingManager: ObservableObject {
         self.speakerProfileService.matchThreshold = Float(appSettings.speakerMatchThreshold)
         self.semanticSearch.configure(modelContext: modelContext)
 
-        // Load transcription model
-        Task {
-            await loadTranscriptionModel()
+        // Sync routing mode into the service up-front.
+        transcriptionService.mode = appSettings.selectedTranscriptionMode
+
+        // Cloud mode is ready instantly — only the local backend needs a model load.
+        if appSettings.selectedTranscriptionMode == .cloud {
+            isTranscriptionReady = true
+        } else {
+            Task { await loadTranscriptionModel() }
         }
     }
-    
+
     // MARK: - Model Loading
 
     public func loadTranscriptionModel() async {
         let version = appSettings?.selectedParakeetVersion ?? .v3
-        
+
         do {
             try await transcriptionService.loadModel(version: version)
             isTranscriptionReady = true
         } catch {
             print("Failed to load transcription model: \(error)")
             isTranscriptionReady = false
+        }
+    }
+
+    /// Called when the user toggles between cloud/local in Settings. Updates the
+    /// router and lazy-loads the local model if needed.
+    public func updateTranscriptionMode(_ mode: TranscriptionMode) async {
+        transcriptionService.mode = mode
+        switch mode {
+        case .cloud:
+            isTranscriptionReady = true
+        case .local:
+            if !transcriptionService.isModelLoaded() {
+                await loadTranscriptionModel()
+            } else {
+                isTranscriptionReady = true
+            }
         }
     }
     
@@ -139,13 +160,15 @@ final class MeetingManager: ObservableObject {
     }
 
     /// Start a live-streaming transcription session that runs alongside the
-    /// normal file-based recording. Call after the audio tap is installed.
+    /// normal file-based recording. Only runs in local mode — cloud transcription
+    /// happens as a single upload after stop.
     func startLiveTranscription() async {
         // Snapshot any upcoming calendar event so the meeting gets auto-titled on stop.
         activeCalendarContext = calendarServiceRef?.upcomingEvents
             .min(by: { $0.startDate < $1.startDate })
 
-        guard let models = transcriptionService.loadedModels else { return }
+        guard appSettings?.selectedTranscriptionMode == .local,
+              let models = transcriptionService.loadedModels else { return }
 
         // Forward tap buffers into the sliding-window manager from whichever recorder is active.
         let streaming = streamingTranscription
@@ -219,9 +242,12 @@ final class MeetingManager: ObservableObject {
                 throw MeetingManagerError.noAudioFile
             }
             
-            // Transcribe with optional diarization
+            // Transcribe. Diarization is only wired for the local backend — Groq
+            // Whisper doesn't return speaker labels, so we skip it in cloud mode.
+            let wantsDiarization = (appSettings?.enableSpeakerDiarization ?? false)
+                && (appSettings?.selectedTranscriptionMode ?? .cloud) == .local
             let result: TranscriptionResult
-            if appSettings?.enableSpeakerDiarization ?? true {
+            if wantsDiarization {
                 result = try await transcriptionService.transcribeWithDiarization(audioFileURL: url)
             } else {
                 result = try await transcriptionService.transcribe(audioFileURL: url)
@@ -423,7 +449,9 @@ final class MeetingManager: ObservableObject {
                     calendarContext: context
                 )
             } else {
-                if !isTranscriptionReady {
+                // Only the local backend needs a pre-loaded model.
+                if !isTranscriptionReady,
+                   appSettings?.selectedTranscriptionMode == .local {
                     await loadTranscriptionModel()
                 }
                 do {
@@ -435,6 +463,19 @@ final class MeetingManager: ObservableObject {
         }
     }
     
+    // MARK: - Recent
+
+    /// Return the `limit` most-recent meetings, sorted newest first.
+    /// Used by the menu bar popover's "Recent" strip.
+    func recentMeetings(limit: Int) -> [Meeting] {
+        guard let context = modelContext else { return [] }
+        var descriptor = FetchDescriptor<Meeting>(
+            sortBy: [SortDescriptor(\.date, order: .reverse)]
+        )
+        descriptor.fetchLimit = limit
+        return (try? context.fetch(descriptor)) ?? []
+    }
+
     // MARK: - Export
     
     func exportMeeting(_ meeting: Meeting, format: ExportFormat) -> Data {

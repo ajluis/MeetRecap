@@ -6,14 +6,19 @@ enum TranscriptionState: Equatable {
     case idle
     case downloadingModel(progress: Double)
     case loadingModel
+    case uploading
     case transcribing(progress: Double?)
     case diarizing
     case completed
     case failed(String)
-    
+
     static func == (lhs: TranscriptionState, rhs: TranscriptionState) -> Bool {
         switch (lhs, rhs) {
-        case (.idle, .idle), (.loadingModel, .loadingModel), (.diarizing, .diarizing), (.completed, .completed):
+        case (.idle, .idle),
+             (.loadingModel, .loadingModel),
+             (.uploading, .uploading),
+             (.diarizing, .diarizing),
+             (.completed, .completed):
             return true
         case (.downloadingModel(let a), .downloadingModel(let b)):
             return a == b
@@ -59,11 +64,16 @@ struct TranscriptResultSegment {
 @MainActor
 final class TranscriptionService: ObservableObject {
     @Published var state: TranscriptionState = .idle
-    
+
+    /// Current routing mode. Drives `transcribe` dispatch and whether the local
+    /// FluidAudio model gets loaded eagerly on startup.
+    var mode: TranscriptionMode = .cloud
+
     private var asrManager: AsrManager?
     private var asrModels: AsrModels?
     private let audioConverter = MeetRecap.AudioConverter()
-    
+    private let cloud = CloudTranscriptionService()
+
     private var parakeetVersion: ParakeetVersion = .v3
 
     /// Currently loaded ASR models, if any. Exposed so services such as
@@ -71,20 +81,20 @@ final class TranscriptionService: ObservableObject {
     var loadedModels: AsrModels? { asrModels }
 
     init() {}
-    
-    // MARK: - Model Management
-    
+
+    // MARK: - Model Management (local only)
+
     func loadModel(version: ParakeetVersion = .v3) async throws {
         self.parakeetVersion = version
         state = .loadingModel
-        
+
         do {
             let modelVersion: AsrModelVersion = version == .v2 ? .v2 : .v3
             let models = try await AsrModels.downloadAndLoad(version: modelVersion)
-            
+
             let manager = AsrManager(config: .default)
             try await manager.initialize(models: models)
-            
+
             self.asrManager = manager
             self.asrModels = models
             state = .idle
@@ -93,85 +103,58 @@ final class TranscriptionService: ObservableObject {
             throw error
         }
     }
-    
+
     func isModelLoaded() -> Bool {
         return asrManager != nil
     }
-    
-    // MARK: - Transcription
-    
-    /// Transcribe an audio file and return segments with timestamps
+
+    // MARK: - Transcription (dispatch)
+
+    /// Transcribe an audio file and return segments with timestamps. Routes to
+    /// cloud (Groq Whisper) or local (FluidAudio Parakeet) based on `mode`.
     func transcribe(audioFileURL: URL) async throws -> TranscriptionResult {
-        guard let manager = asrManager else {
-            throw TranscriptionError.modelNotLoaded
+        switch mode {
+        case .cloud:
+            state = .uploading
+            do {
+                let result = try await cloud.transcribe(audioFileURL: audioFileURL)
+                state = .completed
+                return result
+            } catch {
+                state = .failed(error.localizedDescription)
+                throw error
+            }
+        case .local:
+            return try await transcribeLocal(audioFileURL: audioFileURL)
         }
-        
-        state = .transcribing(progress: nil)
-        
-        // Convert audio to 16kHz mono float samples
-        let samples = try audioConverter.resampleAudioFile(audioFileURL)
-        
-        // Get duration
-        let duration = AudioConverter.duration(of: audioFileURL) ?? 0
-        
-        // Run ASR
-        let result = try await manager.transcribe(samples)
-        
-        // Convert token timings to sentence-like segments
-        // Group tokens into ~10-second segments for readability
-        var segments: [TranscriptResultSegment] = []
-        
-        if let tokenTimings = result.tokenTimings, !tokenTimings.isEmpty {
-            segments = groupTokensIntoSegments(
-                tokens: tokenTimings,
-                fullText: result.text
-            )
-        } else {
-            // Fallback: single segment with full text
-            segments = [TranscriptResultSegment(
-                text: result.text,
-                startTime: 0,
-                endTime: duration,
-                speaker: nil,
-                confidence: result.confidence
-            )]
-        }
-        
-        state = .completed
-        
-        return TranscriptionResult(
-            segments: segments,
-            fullText: result.text,
-            duration: duration
-        )
     }
-    
-    /// Transcribe with speaker diarization
+
+    /// Transcribe with speaker diarization. Diarization only runs for the local
+    /// backend — Groq Whisper does not return speaker labels.
     func transcribeWithDiarization(audioFileURL: URL) async throws -> TranscriptionResult {
-        // First transcribe
-        var result = try await transcribe(audioFileURL: audioFileURL)
-        
+        guard mode == .local else {
+            // Diarization isn't supported on cloud — fall back to plain transcribe.
+            return try await transcribe(audioFileURL: audioFileURL)
+        }
+
+        var result = try await transcribeLocal(audioFileURL: audioFileURL)
+
         state = .diarizing
-        
-        // Then diarize
+
         do {
             let diarizer = OfflineDiarizerManager(config: OfflineDiarizerConfig())
             try await diarizer.prepareModels()
-            
+
             let samples = try audioConverter.resampleAudioFile(audioFileURL)
             let diarizationResult = try await diarizer.process(audio: samples)
-            
-            // Map speakers to transcript segments
-            var diarizedSegments: [TranscriptResultSegment] = []
 
+            var diarizedSegments: [TranscriptResultSegment] = []
             for segment in result.segments {
-                // Find matching speaker from diarization
                 let speaker = findSpeaker(
                     for: segment.startTime,
                     endTime: segment.endTime,
                     in: diarizationResult.segments
                 )
-
                 diarizedSegments.append(TranscriptResultSegment(
                     text: segment.text,
                     startTime: segment.startTime,
@@ -188,13 +171,47 @@ final class TranscriptionService: ObservableObject {
                 speakerEmbeddings: diarizationResult.speakerDatabase
             )
         } catch {
-            // Diarization failed, return transcription without speakers
             print("Diarization failed: \(error). Returning transcript without speakers.")
         }
-        
+
         state = .completed
         return result
     }
+
+    private func transcribeLocal(audioFileURL: URL) async throws -> TranscriptionResult {
+        guard let manager = asrManager else {
+            throw TranscriptionError.modelNotLoaded
+        }
+
+        state = .transcribing(progress: nil)
+
+        let samples = try audioConverter.resampleAudioFile(audioFileURL)
+        let duration = AudioConverter.duration(of: audioFileURL) ?? 0
+        let result = try await manager.transcribe(samples)
+
+        var segments: [TranscriptResultSegment] = []
+        if let tokenTimings = result.tokenTimings, !tokenTimings.isEmpty {
+            segments = groupTokensIntoSegments(tokens: tokenTimings, fullText: result.text)
+        } else {
+            segments = [TranscriptResultSegment(
+                text: result.text,
+                startTime: 0,
+                endTime: duration,
+                speaker: nil,
+                confidence: result.confidence
+            )]
+        }
+
+        state = .completed
+        return TranscriptionResult(
+            segments: segments,
+            fullText: result.text,
+            duration: duration
+        )
+    }
+
+    /// Expose the cloud service for UI that wants to call `testConnection()`.
+    var cloudService: CloudTranscriptionService { cloud }
     
     /// Transcribe from raw float samples (for streaming use)
     func transcribeSamples(_ samples: [Float]) async throws -> TranscriptionResult {

@@ -4,18 +4,42 @@ import SwiftData
 enum ParakeetVersion: String, Codable, CaseIterable {
     case v2 = "v2"  // English-only, higher recall
     case v3 = "v3"  // Multilingual, 25 European languages
-    
+
     var displayName: String {
         switch self {
         case .v2: return "Parakeet v2 (English only)"
         case .v3: return "Parakeet v3 (25 languages)"
         }
     }
-    
+
     var modelId: String {
         switch self {
         case .v2: return "FluidInference/parakeet-tdt-0.6b-v2-coreml"
         case .v3: return "FluidInference/parakeet-tdt-0.6b-v3-coreml"
+        }
+    }
+}
+
+/// Selects where transcription runs. Cloud is the default — instant startup, no
+/// model download, $0.04/hr via Groq Whisper v3 Turbo. Local keeps the offline
+/// FluidAudio path for users who prefer on-device processing.
+enum TranscriptionMode: String, Codable, CaseIterable, Identifiable {
+    case cloud
+    case local
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .cloud: return "Cloud (Groq Whisper)"
+        case .local: return "On-device (Parakeet)"
+        }
+    }
+
+    var tagline: String {
+        switch self {
+        case .cloud: return "Fast, no model download. Needs internet and a Groq API key."
+        case .local: return "Runs entirely offline on Apple Neural Engine. First load downloads the model."
         }
     }
 }
@@ -45,6 +69,7 @@ final class AppSettings {
     var parakeetVersion: String  // ParakeetVersion rawValue
     var openRouterModel: String  // e.g. "z-ai/glm-5.1"
     var reasoningEffort: String  // ReasoningEffort rawValue
+    var transcriptionMode: String  // TranscriptionMode rawValue
     var autoTranscribe: Bool
     var autoSummarize: Bool
     var launchAtLogin: Bool
@@ -55,6 +80,7 @@ final class AppSettings {
     var preRecordNotificationMinutes: Int
     var speakerMatchThreshold: Double
     var useNativeSystemAudio: Bool
+    var hasCompletedOnboarding: Bool
     var createdAt: Date
     var updatedAt: Date
 
@@ -63,20 +89,22 @@ final class AppSettings {
         self.parakeetVersion = ParakeetVersion.v3.rawValue
         self.openRouterModel = "z-ai/glm-5.1"
         self.reasoningEffort = ReasoningEffort.low.rawValue
+        self.transcriptionMode = TranscriptionMode.cloud.rawValue
         self.autoTranscribe = true
         self.autoSummarize = true
         self.launchAtLogin = false
-        self.enableSpeakerDiarization = true
+        self.enableSpeakerDiarization = false
         self.enableGlobalShortcuts = true
         self.enableCalendarIntegration = false
         self.enableMeetingDetection = false
         self.preRecordNotificationMinutes = 2
         self.speakerMatchThreshold = 0.85
         self.useNativeSystemAudio = false
+        self.hasCompletedOnboarding = false
         self.createdAt = Date()
         self.updatedAt = Date()
     }
-    
+
     var selectedParakeetVersion: ParakeetVersion {
         get { ParakeetVersion(rawValue: parakeetVersion) ?? .v3 }
         set { parakeetVersion = newValue.rawValue }
@@ -85,5 +113,10 @@ final class AppSettings {
     var selectedReasoningEffort: ReasoningEffort {
         get { ReasoningEffort(rawValue: reasoningEffort) ?? .low }
         set { reasoningEffort = newValue.rawValue }
+    }
+
+    var selectedTranscriptionMode: TranscriptionMode {
+        get { TranscriptionMode(rawValue: transcriptionMode) ?? .cloud }
+        set { transcriptionMode = newValue.rawValue }
     }
 }
